@@ -17,3 +17,12 @@ class Stock(StockBase):
 
     class Config:
         orm_mode = True
+
+class StockSignal(BaseModel):
+    symbol: str
+    signal: str
+    score: int
+    reasons: list[str]
+
+    class Config:
+        orm_mode = True

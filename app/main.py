@@ -27,3 +27,7 @@ def read_stock(stock_id: int, db: Session = Depends(get_db)):
     if db_stock is None:
         raise HTTPException(status_code=404, detail="Stock not found")
     return db_stock
+
+@app.get("/stocks/signal", response_model = schemas.StockSignal)
+def read_signal(stock_name: str, db: Session = Depends(get_db)):
+    return crud.get_signal(db, stock_name=stock_name)

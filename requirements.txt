@@ -1,6 +1,7 @@
 fastapi
 fastapi[standard]
 uvicorn
+openai
 sqlalchemy
 psycopg2-binary
 pydantic

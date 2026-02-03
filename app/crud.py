@@ -16,3 +16,59 @@ def create_stock(db: Session, stock: schemas.StockCreate):
     db.commit()
     db.refresh(db_stock)
     return db_stock
+
+def get_signal(db: Session, stock_name: str):
+    df = get_stock_by_name(db, stock_name=stock_name)
+    if df is None:
+        raise HTTPException(status_code=404, detail="Stock not found")
+    df["ma_5"] = df["close_price"].rolling(5).mean()
+    df["ma_20"] = df["close_price"].rolling(20).mean()
+
+    latest = df.iloc[-1]
+    score = 0
+    reasons = []
+
+    # Trend
+    if latest["close_price"] > latest["ma_20"]:
+        score += 1
+        reasons.append("Price above 20-day moving average")
+    else:
+        score -= 1
+        reasons.append("Price below 20-day moving average")
+
+    # Momentum
+    if latest["ma_5"] > latest["ma_20"]:
+        score += 1
+        reasons.append("Positive short-term momentum")
+    else:
+        score -= 1
+        reasons.append("Negative short-term momentum")
+
+    # Volume confirmation
+    avg_volume = df["volume"].rolling(20).mean().iloc[-1]
+    if latest["volume"] > avg_volume:
+        score += 1
+        reasons.append("Above-average trading volume")
+    else:
+        score -= 1
+        reasons.append("Below-average trading volume")
+
+    # Signal mapping
+    if score >= 3:
+        signal = "Strong Buy"
+    elif score >= 1:
+        signal = "Buy"
+    elif score == 0:
+        signal = "Neutral"
+    elif score <= -3:
+        signal = "Strong Sell"
+    else:
+        signal = "Sell"
+
+    return {
+        "symbol": symbol,
+        "signal": signal,
+        "score": score,
+        "reasons": reasons
+    }
+
