@@ -1,35 +1,52 @@
 from sqlalchemy.orm import Session
-import models, schemas
+from app.models import StockRecord
+from app.schemas import StockCreate
+from fastapi import HTTPException
+import pandas as pd
 
 def get_stock(db: Session, stock_id: int):
-    return db.query(models.StockRecord).filter(models.StockRecord.id == stock_id).first()
-
+    return db.query(StockRecord).filter(StockRecord.id == stock_id).first()
 def get_stock_by_name(db: Session, stock_name: str):
-    return db.query(models.StockRecord).filter(models.StockRecord.stock_name == stock_name).first()
+    return db.query(StockRecord).filter(StockRecord.stock_name == stock_name).all()
 
 def get_stocks(db: Session, skip: int = 0, limit: int = 100):
-    return db.query(models.StockRecord).offset(skip).limit(limit).all()
+    return db.query(StockRecord).offset(skip).limit(limit).all()
 
-def create_stock(db: Session, stock: schemas.StockCreate):
-    db_stock = models.StockRecord(date=stock.date, open=stock.open, high=stock.high, low=stock.low, close=stock.close, volume=stock.volume, stock_name=stock.stock_name)
+def get_unique_stock_names(db: Session):
+    results =  (
+        db.query(StockRecord.stock_name)
+        .distinct()
+        .all()
+    )
+    return [{"stock_name": row[0].upper()} for row in results]
+
+def create_stock(db: Session, stock: StockCreate):
+    db_stock = StockRecord(date=stock.date, open=stock.open, high=stock.high, low=stock.low, close=stock.close, volume=stock.volume, stock_name=stock.stock_name)
     db.add(db_stock)
     db.commit()
     db.refresh(db_stock)
     return db_stock
 
 def get_signal(db: Session, stock_name: str):
-    df = get_stock_by_name(db, stock_name=stock_name)
-    if df is None:
+    records = get_stock_by_name(db, stock_name=stock_name)
+    if records is None:
         raise HTTPException(status_code=404, detail="Stock not found")
-    df["ma_5"] = df["close_price"].rolling(5).mean()
-    df["ma_20"] = df["close_price"].rolling(20).mean()
+    
+    df = pd.DataFrame([{
+    "date": r.date,
+    "close": float(r.close),
+    "volume": float(r.volume)
+} for r in records])
+    
+    df["ma_5"] = df["close"].rolling(5).mean()
+    df["ma_20"] = df["close"].rolling(20).mean()
 
     latest = df.iloc[-1]
     score = 0
     reasons = []
 
     # Trend
-    if latest["close_price"] > latest["ma_20"]:
+    if latest["close"] > latest["ma_20"]:
         score += 1
         reasons.append("Price above 20-day moving average")
     else:
@@ -66,9 +83,8 @@ def get_signal(db: Session, stock_name: str):
         signal = "Sell"
 
     return {
-        "symbol": symbol,
+        "symbol": stock_name,
         "signal": signal,
         "score": score,
         "reasons": reasons
     }
-

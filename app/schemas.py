@@ -15,6 +15,9 @@ class StockCreate(StockBase):
 class Stock(StockBase):
     id: int
 
+class unique_name(BaseModel):
+    stock_name: str
+
     class Config:
         orm_mode = True
 
