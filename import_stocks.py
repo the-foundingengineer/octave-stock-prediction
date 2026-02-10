@@ -29,6 +29,10 @@ def import_data(file_path: str):
             reader = csv.DictReader(f)
             
             count = 0
+            # Track unique symbols seen in this batch
+            seen_symbols = set()
+            existing_stocks = {s[0] for s in db.query(models.Stock.symbol).all()}
+            
             for row in reader:
                 # Map CSV columns to database model fields
                 # CSV Headers: Date,Price,Open,High,Low,Vol.,Change %,symbol,Name,...
@@ -40,8 +44,15 @@ def import_data(file_path: str):
                     low=row.get("Low"),
                     close=row.get("Price"), # Assuming 'Price' is the close price
                     volume=row.get("Vol."),
-                    stock_name=row.get("symbol") # Using 'symbol' as stock_name
+                    stock_name=row.get("symbol").replace("Stock\\", "") # Using 'symbol' as stock_name and removing 'Stock\' prefix
                 )
+                
+                clean_name = stock_record.stock_name
+                if clean_name not in existing_stocks and clean_name not in seen_symbols:
+                    stock_entry = models.Stock(symbol=clean_name)
+                    db.add(stock_entry)
+                    seen_symbols.add(clean_name)
+
                 
                 db.add(stock_record)
                 count += 1
