@@ -43,6 +43,15 @@ def read_stock(stock_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Stock not found")
     return db_stock
 
+@app.post("/stocks/{symbol}/refresh")
+def refresh_stock(symbol: str, token: str, db: Session = Depends(get_db)):
+    try:
+        from app.services import update_stock_info
+        stock = update_stock_info(db, symbol, token)
+        return stock
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 @app.get("/market", response_model=list[MarketTableItem])
 def read_market_table(
     page: int = Query(1, ge=1),
