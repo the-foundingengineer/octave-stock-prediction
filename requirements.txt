@@ -2,7 +2,10 @@ fastapi
 fastapi[standard]
 uvicorn
 openai
+google-generativeai
 sqlalchemy
 psycopg2-binary
 pydantic
 python-dotenv
+selenium
+webdriver-manager

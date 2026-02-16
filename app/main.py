@@ -1,3 +1,4 @@
+from app.crud import get_stock_related
 from app.schemas import StockRelatedResponse
 from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy.orm import Session

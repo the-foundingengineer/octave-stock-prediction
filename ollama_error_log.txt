@@ -1,0 +1,8 @@
+ERROR: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=120)
+
+No response metadata available
+============================================================
+[2026-02-13T16:58:33.958657] LABEL: AIRTELAFRI/stock+price
+ERROR: 404 Client Error: Not Found for url: http://localhost:11434/api/generate
+RAW (first 2000 chars):
+

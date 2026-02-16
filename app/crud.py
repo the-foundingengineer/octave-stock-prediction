@@ -282,23 +282,41 @@ def get_stock_related(db: Session, stock_id: int, limit: int = 10):
     if not stock:
         return None
     
-    related = (
+    # Fetch related stocks in the same sector, excluding the current one
+    related_stocks = (
         db.query(Stock)
         .filter(Stock.sector == stock.sector)
-        .order_by(desc(Stock.market_cap))
+        .filter(Stock.id != stock_id)
         .limit(limit)
         .all()
     )
 
-    return [
-        {
-            "stock_id": stock.id,
-            "symbol": stock.symbol,
-            "market_cap": stock.market_cap,
-            "revenue_ttm": stock.revenue_ttm,
-        }
-        for stock in related
-    ]
+    results = []
+    for s in related_stocks:
+        # Fetch latest metrics for each related stock
+        # Using similar logic to get_stock_stats but simplified
+        latest_kline = (
+            db.query(DailyKline)
+            .filter(DailyKline.symbol == s.symbol)
+            .order_by(desc(DailyKline.date))
+            .first()
+        )
+        
+        latest_income = (
+            db.query(IncomeStatement)
+            .filter(IncomeStatement.stock_id == s.id)
+            .order_by(desc(IncomeStatement.period_ending))
+            .first()
+        )
+
+        results.append({
+            "stock_id": s.id,
+            "symbol": s.symbol,
+            "market_cap": float(latest_kline.market_cap) if latest_kline and latest_kline.market_cap else None,
+            "revenue_ttm": float(latest_income.revenue) if latest_income and latest_income.revenue else None,
+        })
+
+    return results
 
 
 def _parse_volume(vol_str: str) -> float:
