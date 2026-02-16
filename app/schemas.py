@@ -3,12 +3,12 @@ from typing import List, Optional
 
 class StockRecordBase(BaseModel):
     date: str
-    open: str
-    high: str
-    low: str
-    close: str
-    volume: str
-    stock_name: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: Optional[int] = None
+    symbol: str
 
 class StockRecordCreate(StockRecordBase):
     pass
@@ -72,5 +72,63 @@ class StockSignal(BaseModel):
     score: int
     reasons: List[str]
 
+    class Config:
+        orm_mode = True
+
+class KlineData(BaseModel):
+    date: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+class KlineResponse(BaseModel):
+    stock_id: int
+    symbol: str
+    interval: str
+    klines: List[KlineData]
+
+    class Config:
+        orm_mode = True
+
+class StockStatsResponse(BaseModel):
+    stock_id: int
+    symbol: str
+    market_cap: Optional[float] = None
+    revenue_ttm: Optional[float] = None
+    net_income: Optional[float] = None
+    eps: Optional[float] = None
+    shares_outstanding: Optional[int] = None
+    pe_ratio: Optional[float] = None
+    forward_pe: Optional[float] = None
+    dividend: Optional[float] = None
+    ex_dividend_date: Optional[str] = None
+    volume: Optional[int] = None
+    avg_volume: Optional[int] = None
+    open: Optional[float] = None
+    previous_close: Optional[float] = None
+    day_range: Optional[str] = None
+    fifty_two_week_range: Optional[str] = None
+    beta: Optional[float] = None
+    rsi: Optional[float] = None
+    earnings_date: Optional[str] = None
+
+    class Config:
+        orm_mode = True
+
+class StockInfoResponse(BaseModel):
+    stock_id: int
+    symbol: str
+    ipo_date: Optional[str] = None
+    name: Optional[str] = None
+    fifty_two_week_high: Optional[float] = None
+    fifty_two_week_low: Optional[float] = None
+    fifty_day_moving_average: Optional[float] = None
+    sector: Optional[str] = None
+    industry: Optional[str] = None
+    sentiment: Optional[str] = None
+    sp_score: Optional[int] = None
+    
     class Config:
         orm_mode = True

@@ -3,8 +3,8 @@ from sqlalchemy.orm import Session
 from typing import List
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.crud import create_stock_record, get_stocks, get_stock, get_market_table
-from app.schemas import StockRecordCreate, StockRecord, Stock, StockCreate, MarketTableItem
+from app.crud import create_stock_record, get_stocks, get_stock, get_stock_kline, get_stock_stats, get_stock_info
+from app.schemas import StockRecordCreate, StockRecord, Stock, KlineResponse, StockStatsResponse, StockInfoResponse
 
 from app import models
 from app.database import SessionLocal, engine, get_db
@@ -52,10 +52,25 @@ def refresh_stock(symbol: str, token: str, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@app.get("/market", response_model=list[MarketTableItem])
-def read_market_table(
-    page: int = Query(1, ge=1),
-    limit: int = Query(10, ge=1, le=100),
-    db: Session = Depends(get_db)
-):
-    return get_market_table(db, page=page, limit=limit)
+
+@app.get("/stocks/{stock_id}/klines", response_model=KlineResponse)
+def get_klines(stock_id: int, interval: str, limit:int = Query(500, ge=1, le=1000), db: Session = Depends(get_db)):
+    db_stock_kline = get_stock_kline(db, stock_id, interval, limit)
+    if db_stock_kline is None:
+        raise HTTPException(status_code=404, detail="Stock kline not found")
+    return db_stock_kline
+
+@app.get("/stocks/{stock_id}/stats", response_model=StockStatsResponse)
+def get_stats(stock_id: int, db: Session = Depends(get_db)):
+    db_stats = get_stock_stats(db, stock_id)
+    if db_stats is None:
+        raise HTTPException(status_code=404, detail="Stock statistics not found")
+    return db_stats
+
+@app.get("/stocks/{stock_id}/info", response_model=StockInfoResponse)
+def get_info(stock_id: int, db: Session = Depends(get_db)):
+    db_info = get_stock_info(db, stock_id)
+    if db_info is None:
+        raise HTTPException(status_code=404, detail="Stock info not found")
+    return db_info
+

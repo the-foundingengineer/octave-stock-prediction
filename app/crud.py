@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func, text as sa_text
-from app.models import StockRecord, Stock
+from app.models import DailyKline, Stock, IncomeStatement, BalanceSheet, StockRatio
 from app.schemas import StockRecordCreate
 
 def get_stock(db: Session, stock_id: int):
@@ -21,19 +21,263 @@ def get_unique_stock_names(db: Session):
     return [{"id": stock.id, "stock_name": stock.symbol.upper()} for stock in results]
 
 def create_stock_record(db: Session, stock: StockRecordCreate):
-    db_stock = StockRecord(
+    db_stock = DailyKline(
         date=stock.date,
         open=stock.open,
         high=stock.high,
         low=stock.low,
         close=stock.close,
         volume=stock.volume,
-        stock_name=stock.stock_name
+        symbol=stock.symbol
     )
     db.add(db_stock)
     db.commit()
     db.refresh(db_stock)
     return db_stock
+
+def get_stock_kline(db: Session, stock_id: int, interval: str, limit: int):
+    """
+    Fetch and aggregate klines for various intervals using stock_id.
+    """
+    from datetime import datetime
+    
+    stock = db.query(Stock).filter(Stock.id == stock_id).first()
+    if not stock:
+        return None
+    
+    symbol = stock.symbol.upper()
+    
+    # Standardize interval
+    interval = interval.lower()
+    if interval in ['1d', 'daily', 'day']:
+        agg_key = 'day'
+    elif interval in ['1w', 'weekly', 'week']:
+        agg_key = 'week'
+    elif interval in ['1m', 'monthly', 'month']:
+        agg_key = 'month'
+    elif interval in ['1y', 'yearly', 'year']:
+        agg_key = 'year'
+    else:
+        agg_key = 'day' # Default
+
+    # If limit=50 and interval=week, we need at least 50 * 5 = 250 daily records.
+    fetch_limit = limit
+    if agg_key == 'week': fetch_limit = limit * 7
+    elif agg_key == 'month': fetch_limit = limit * 31
+    elif agg_key == 'year': fetch_limit = limit * 366
+    
+    # Cap fetch_limit at 5000 to prevent OOM
+    fetch_limit = min(fetch_limit, 5000)
+
+    query = db.query(DailyKline).filter(DailyKline.symbol == symbol.upper())
+    daily_results = query.order_by(DailyKline.date.asc()).all() # Sort ASC for easier aggregation
+    
+    if not daily_results:
+        return {"symbol": symbol.upper(), "interval": interval, "klines": []}
+
+    if agg_key == 'day':
+        # Daily is just formatting the latest N
+        results = daily_results[-limit:] if len(daily_results) > limit else daily_results
+        results.reverse() # Show latest first
+        formatted = []
+        for r in results:
+            formatted.append({
+                "date": str(r.date),
+                "open": _safe_float(r.open),
+                "high": _safe_float(r.high),
+                "low": _safe_float(r.low),
+                "close": _safe_float(r.close),
+                "volume": _safe_float(r.volume)
+            })
+        return {"symbol": symbol.upper(), "interval": interval, "klines": formatted}
+
+    # Helper to get grouping key
+    def get_group_key(date_str):
+        # Handle both %Y-%m-%d and potentially other formats if needed, but standardize on %Y-%m-%d
+        try:
+            dt = datetime.strptime(date_str, '%Y-%m-%d')
+        except ValueError:
+            # Fallback for MM/DD/YYYY if present in DB
+            dt = datetime.strptime(date_str, '%m/%d/%Y')
+        
+        if agg_key == 'week':
+            # Use ISO week: (year, week_number)
+            isocal = dt.isocalendar()
+            return f"{isocal[0]}-W{isocal[1]:02d}"
+        elif agg_key == 'month':
+            return dt.strftime('%Y-%m')
+        elif agg_key == 'year':
+            return dt.strftime('%Y')
+        return date_str
+
+    # Aggregate
+    groups = {}
+    group_order = []
+    
+    for r in daily_results:
+        # Skip records with missing essential data to avoid float(None) errors
+        if r.open is None or r.high is None or r.low is None or r.close is None:
+            continue
+            
+        key = get_group_key(r.date)
+        r_open = float(r.open)
+        r_high = float(r.high)
+        r_low = float(r.low)
+        r_close = float(r.close)
+        r_vol = float(r.volume or 0)
+
+        if key not in groups:
+            groups[key] = {
+                'date': r.date, 
+                'open': r_open,
+                'high': r_high,
+                'low': r_low,
+                'close': r_close,
+                'volume': r_vol
+            }
+            group_order.append(key)
+        else:
+            g = groups[key]
+            if r_high > g['high']: g['high'] = r_high
+            if r_low < g['low']: g['low'] = r_low
+            g['close'] = r_close
+            g['volume'] += r_vol
+    
+    # Format and apply limit
+    final_results = []
+    for key in reversed(group_order):
+        g = groups[key]
+        final_results.append({
+            "date": str(g['date']),
+            "open": g['open'],
+            "high": g['high'],
+            "low": g['low'],
+            "close": g['close'],
+            "volume": g['volume']
+        })
+        if len(final_results) >= limit:
+            break
+            
+    return {
+        "stock_id": stock_id,
+        "symbol": symbol,
+        "interval": interval,
+        "klines": final_results
+    }
+
+def get_stock_stats(db: Session, stock_id: int):
+    """
+    Aggregate comprehensive stats for a stock using stock_id.
+    """
+    stock = db.query(Stock).filter(Stock.id == stock_id).first()
+    if not stock:
+        return None
+    
+    symbol = stock.symbol.upper()
+
+    # Latest 2 Klines for Price, Change, Previous Close, Ranges, RSI, etc.
+    latest_klines = (
+        db.query(DailyKline)
+        .filter(DailyKline.symbol == symbol)
+        .order_by(desc(DailyKline.date))
+        .limit(2)
+        .all()
+    )
+    
+    latest = latest_klines[0] if latest_klines else None
+    prev = latest_klines[1] if len(latest_klines) > 1 else None
+
+    # Latest TTM Income Statement
+    income = (
+        db.query(IncomeStatement)
+        .filter(IncomeStatement.stock_id == stock.id, IncomeStatement.period_type == 'TTM')
+        .order_by(desc(IncomeStatement.period_ending))
+        .first()
+    )
+    if not income: # Fallback to FY if TTM missing
+         income = (
+            db.query(IncomeStatement)
+            .filter(IncomeStatement.stock_id == stock.id)
+            .order_by(desc(IncomeStatement.period_ending))
+            .first()
+        )
+
+    # Latest Balance Sheet
+    balance = (
+        db.query(BalanceSheet)
+        .filter(BalanceSheet.stock_id == stock.id)
+        .order_by(desc(BalanceSheet.period_ending))
+        .first()
+    )
+
+    # Day's Range calculation
+    day_range = None
+    if latest and latest.low and latest.high:
+        day_range = f"{latest.low:,.2f} - {latest.high:,.2f}"
+
+    # 52-Week Range
+    fifty_two_range = None
+    if latest and latest.week_52_low and latest.week_52_high:
+        fifty_two_range = f"{latest.week_52_low:,.2f} - {latest.week_52_high:,.2f}"
+
+    return {
+        "stock_id": stock_id,
+        "symbol": symbol,
+        "market_cap": float(latest.market_cap) if latest and latest.market_cap else None,
+        "revenue_ttm": float(income.revenue) if income and income.revenue else None,
+        "net_income": float(income.net_income) if income and income.net_income else None,
+        "eps": float(income.eps_basic) if income and income.eps_basic else None,
+        "shares_outstanding": balance.shares_outstanding if balance and balance.shares_outstanding else None,
+        "pe_ratio": latest.pe_ratio if latest and latest.pe_ratio else None,
+        "forward_pe": latest.forward_pe if latest and latest.forward_pe else None,
+        "dividend": latest.dividend_per_share if latest and latest.dividend_per_share else None,
+        "ex_dividend_date": latest.ex_dividend_date if latest and latest.ex_dividend_date else None,
+        "volume": latest.volume if latest and latest.volume else None,
+        "avg_volume": latest.avg_volume_20d if latest and latest.avg_volume_20d else None,
+        "open": latest.open if latest and latest.open else None,
+        "previous_close": prev.close if prev and prev.close else None,
+        "day_range": day_range,
+        "fifty_two_week_range": fifty_two_range,
+        "beta": latest.beta if latest and latest.beta else None,
+        "rsi": latest.rsi if latest and latest.rsi else None,
+        "earnings_date": None # Not captured in current specific models but field is there for future
+    }
+
+def get_stock_info(db: Session, stock_id: int):
+    stock = db.query(Stock).filter(Stock.id == stock_id).first()
+    if not stock:
+        return None
+    
+    symbol = stock.symbol.upper()
+
+    latest_klines = (
+        db.query(DailyKline)
+        .filter(DailyKline.symbol == symbol)
+        .order_by(desc(DailyKline.date))
+        .limit(2)
+        .all()
+    )
+    
+    latest = latest_klines[0] if latest_klines else None
+    prev = latest_klines[1] if len(latest_klines) > 1 else None
+
+
+    return {
+        "stock_id": stock_id,
+        "symbol": symbol,
+        "ipo_date": getattr(stock, 'founded', None),
+        "name": stock.name,
+        "fifty_two_week_high": _safe_float(latest.week_52_high) if latest else None,
+        "fifty_two_week_low": _safe_float(latest.week_52_low) if latest else None,
+        "fifty_day_moving_average": _safe_float(latest.ma_50d) if latest else None,
+        "sector": stock.sector,
+        "industry": stock.industry,
+        "sentiment": getattr(stock, 'sentiment', None),
+        "sp_score": getattr(stock, 'sp_score', None),
+    }
+
+    
+    
 
 
 def _parse_volume(vol_str: str) -> float:
@@ -54,72 +298,6 @@ def _parse_volume(vol_str: str) -> float:
         return 0.0
 
 
-def get_market_table(db: Session, page: int, limit: int):
-    """
-    Compute a market-table summary for each stock.
-    Returns price (latest close), 24h% (day-over-day), 7d%, 
-    market cap, volume, and outstanding stock.
-    """
-    offset = (page - 1) * limit
-    stocks = (
-        db.query(Stock)
-        .order_by(Stock.id)
-        .offset(offset)
-        .limit(limit)
-        .all()
-    )
-
-    result = []
-    for stock in stocks:
-        # Fetch the latest 2 records for this stock (for price + 24h%)
-        latest_records = (
-            db.query(StockRecord)
-            .filter(StockRecord.stock_name == stock.symbol)
-            .order_by(desc(func.to_date(StockRecord.date, 'MM/DD/YYYY')))
-            .limit(8)  # grab enough for 7d calculation
-            .all()
-        )
-
-        if not latest_records:
-            continue
-
-        # Latest record
-        today = latest_records[0]
-        price = _safe_float(today.close)
-        volume_24h = _parse_volume(today.volume)
-
-        # 24h % (day-over-day)
-        change_24h = None
-        if len(latest_records) >= 2:
-            yesterday_close = _safe_float(latest_records[1].close)
-            if yesterday_close and yesterday_close != 0:
-                change_24h = round(((price - yesterday_close) / yesterday_close) * 100, 2)
-
-        # 7d % (compare to ~7th record back)
-        change_7d = None
-        if len(latest_records) >= 6:
-            week_ago_close = _safe_float(latest_records[-1].close)
-            if week_ago_close and week_ago_close != 0:
-                change_7d = round(((price - week_ago_close) / week_ago_close) * 100, 2)
-
-        # Market cap
-        market_cap = None
-        if stock.outstanding_shares and price:
-            market_cap = round(price * stock.outstanding_shares, 2)
-
-        result.append({
-            "id": stock.id,
-            "name": stock.name or stock.symbol,
-            "symbol": stock.symbol,
-            "price": price,
-            "change_24h": change_24h,
-            "change_7d": change_7d,
-            "market_cap": market_cap,
-            "volume_24h": volume_24h,
-            "outstanding_stock": stock.outstanding_shares,
-        })
-
-    return result
 
 
 def _safe_float(val) -> float:
