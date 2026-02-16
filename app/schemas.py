@@ -132,3 +132,14 @@ class StockInfoResponse(BaseModel):
     
     class Config:
         orm_mode = True
+
+
+class StockRelatedResponse(BaseModel):
+    stock_id: int
+    symbol: str
+    market_cap: Optional[float] = None
+    revenue_ttm: Optional[float] = None
+
+    class Config:
+        orm_mode = True
+

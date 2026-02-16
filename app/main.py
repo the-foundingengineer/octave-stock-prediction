@@ -1,3 +1,4 @@
+from app.schemas import StockRelatedResponse
 from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List
@@ -73,4 +74,11 @@ def get_info(stock_id: int, db: Session = Depends(get_db)):
     if db_info is None:
         raise HTTPException(status_code=404, detail="Stock info not found")
     return db_info
+
+@app.get("/stocks/{stock_id}/related", response_model=list[StockRelatedResponse])
+def get_related(stock_id: int, limit: int = 10, db: Session = Depends(get_db)):
+    db_related = get_stock_related(db, stock_id, limit)
+    if db_related is None:
+        raise HTTPException(status_code=404, detail="Stock related not found")
+    return db_related
 

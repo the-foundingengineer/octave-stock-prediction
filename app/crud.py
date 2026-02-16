@@ -277,7 +277,28 @@ def get_stock_info(db: Session, stock_id: int):
     }
 
     
+def get_stock_related(db: Session, stock_id: int, limit: int = 10):
+    stock = db.query(Stock).filter(Stock.id == stock_id).first()
+    if not stock:
+        return None
     
+    related = (
+        db.query(Stock)
+        .filter(Stock.sector == stock.sector)
+        .order_by(desc(Stock.market_cap))
+        .limit(limit)
+        .all()
+    )
+
+    return [
+        {
+            "stock_id": stock.id,
+            "symbol": stock.symbol,
+            "market_cap": stock.market_cap,
+            "revenue_ttm": stock.revenue_ttm,
+        }
+        for stock in related
+    ]
 
 
 def _parse_volume(vol_str: str) -> float:
