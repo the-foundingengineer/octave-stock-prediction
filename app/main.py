@@ -83,3 +83,9 @@ def get_related(stock_id: int, limit: int = 10, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Stock related not found")
     return db_related
 
+@app.get("/stocks/popular_comparisons", response_model=list[StockPopularComparisonResponse])
+def get_popular_comparisons(db: Session = Depends(get_db)):
+    db_popular_comparisons = get_popular_comparisons(db)
+    if db_popular_comparisons is None:
+        raise HTTPException(status_code=404, detail="Stock popular comparisons not found")
+    return db_popular_comparisons

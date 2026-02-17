@@ -331,6 +331,27 @@ def get_stock_related(db: Session, stock_id: int, limit: int = 10):
 
     return results
 
+def get_popular_comparisons(db: Session):
+    #Join the tables
+    join_stmt = Stock.__table__.join(DailyKline, Stock.id == DailyKline.stock_id)
+
+    #Rank stocks within each sector by market cap
+    row_number_col = func.row_number().over(
+        partition_by=Stock.sector,
+        order_by=desc(DailyKline.market_cap)
+    ).label("rank")
+
+    stmt = select(
+        Stock.symbol,
+        DailyKline.market_cap,
+        row_number_col
+    ).select_from(join_stmt).subquery()
+
+    #Get top 2 stocks from each sector
+    top2_stmt = select(stmt).where(stmt.c.rank <= 2)
+    results = session.execute(top2_stmt).all()
+
+    return [{"symbol": r.symbol, "market_cap": r.market_cap} for r in results]
 
 def _parse_volume(vol_str: str) -> float:
     """Parse volume strings like '1.05M', '939.04K', '0.00K' into floats."""
