@@ -333,13 +333,11 @@ def get_stock_related(db: Session, stock_id: int, limit: int = 10):
 
 
 def get_popular_comparisons(db: Session):
-    # 1. Get the latest DailyKline date for each symbol to use for ranking
     latest_kline_date_sub = db.query(
         DailyKline.symbol,
         func.max(DailyKline.date).label("latest_date")
     ).group_by(DailyKline.symbol).subquery()
 
-    # 2. Join Stock with the latest DailyKline to get market cap per sector
     ranked_stocks_sub = db.query(
         Stock.id,
         Stock.symbol,
@@ -349,12 +347,20 @@ def get_popular_comparisons(db: Session):
             order_by=desc(DailyKline.market_cap)
         ).label("rank")
     ).join(DailyKline, Stock.symbol == DailyKline.symbol)\
-     .join(latest_kline_date_sub, (DailyKline.symbol == latest_kline_date_sub.c.symbol) & (DailyKline.date == latest_kline_date_sub.c.latest_date))\
-     .subquery()
+     .join(
+         latest_kline_date_sub,
+         (DailyKline.symbol == latest_kline_date_sub.c.symbol) & 
+         (DailyKline.date == latest_kline_date_sub.c.latest_date)
+     ).subquery()
 
-    # 3. Get the top 2 stocks from each sector
-    top_stocks = db.query(ranked_stocks_sub).filter(ranked_stocks_sub.c.rank <= 2).all()
-    
+    # Query subquery columns explicitly
+    top_stocks = db.query(
+        ranked_stocks_sub.c.id,
+        ranked_stocks_sub.c.symbol,
+        ranked_stocks_sub.c.sector,
+        ranked_stocks_sub.c.rank
+    ).filter(ranked_stocks_sub.c.rank <= 2).all()
+
     return [
         {
             "id": s.id,
