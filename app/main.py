@@ -140,7 +140,7 @@ def get_income_statement(stock_id: int, db: Session = Depends(get_db)):
         "fiscal_year_end": db_stock_with_income.fiscal_year_end,
         "income_statement": formatted_income
     }
-@app.get("/stocks/popular_comparisons", response_model=PopularComparisonResponse)
+@app.get("/popular_comparisons", response_model=PopularComparisonResponse)
 def read_popular_comparisons(db: Session = Depends(get_db)):
     db_popular_comparisons = get_popular_comparisons(db)
     if not db_popular_comparisons:
