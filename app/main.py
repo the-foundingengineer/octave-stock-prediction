@@ -33,6 +33,7 @@ from app.crud import (
     get_stock,
     get_stock_by_income_statement,
     get_stock_comparison_details,
+    get_stock_dividends,
     get_stock_info,
     get_stock_kline,
     get_stock_related,
@@ -42,6 +43,7 @@ from app.crud import (
 )
 from app.schemas import (
     BulkComparisonResponse,
+    DividendResponse,
     KlineResponse,
     PopularComparisonResponse,
     Stock,
@@ -79,7 +81,7 @@ app.add_middleware(
 
 @app.post("/stock_records/", response_model=StockRecord)
 def create_record(stock: StockRecordCreate, db: Session = Depends(get_db)):
-    """Create a new daily OHLCV record."""
+    """Create a new stock record."""
     return create_stock_record(db=db, stock=stock)
 
 
@@ -181,6 +183,18 @@ def get_related(
     result = get_stock_related(db, stock_id, limit)
     if result is None:
         raise HTTPException(status_code=404, detail="Stock related not found")
+    return result
+
+
+# ── Dividends ────────────────────────────────────────────────────────────────
+
+
+@app.get("/stocks/{stock_id}/dividends", response_model=List[DividendResponse])
+def get_dividends(stock_id: int, db: Session = Depends(get_db)):
+    """Return historical dividends for a stock."""
+    result = get_stock_dividends(db, stock_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Stock not found")
     return result
 
 

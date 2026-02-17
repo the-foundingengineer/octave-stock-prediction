@@ -113,6 +113,9 @@ class StockStatsResponse(BaseModel):
     beta: Optional[float] = None
     rsi: Optional[float] = None
     earnings_date: Optional[str] = None
+    payout_ratio: Optional[float] = None
+    dividend_growth: Optional[float] = None
+    payout_frequency: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -354,6 +357,9 @@ class StockComparisonItem(BaseModel):
     dividend_yield: Optional[float] = None
     dividend_per_share: Optional[float] = None
     ex_div_date: Optional[str] = None
+    payout_ratio: Optional[float] = None
+    dividend_growth: Optional[float] = None
+    payout_frequency: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -376,6 +382,24 @@ class BulkComparisonItem(BaseModel):
 class BulkComparisonResponse(BaseModel):
     """Response wrapper for the bulk compare endpoint."""
     comparisons: List[BulkComparisonItem]
+
+    class Config:
+        from_attributes = True
+
+
+# ── Dividends ────────────────────────────────────────────────────────────────
+
+
+class DividendResponse(BaseModel):
+    """Single dividend payout record."""
+    id: int
+    stock_id: int
+    ex_dividend_date: str
+    record_date: Optional[str] = None
+    pay_date: Optional[str] = None
+    amount: float
+    currency: Optional[str] = None
+    frequency: Optional[str] = None
 
     class Config:
         from_attributes = True

@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     BalanceSheet, CashFlow, DailyKline,
-    IncomeStatement, Stock, StockRatio,
+    Dividend, IncomeStatement, Stock, StockRatio,
 )
 from app.schemas import StockRecordCreate
 
@@ -388,6 +388,24 @@ def get_stock_related(db: Session, stock_id: int, limit: int = 10) -> Optional[L
         })
 
     return results
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Dividends
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def get_stock_dividends(db: Session, stock_id: int) -> Optional[List[Dividend]]:
+    """Return all historical dividends for a stock, ordered by ex-dividend date."""
+    stock = _resolve_stock(db, stock_id)
+    if not stock:
+        return None
+    return (
+        db.query(Dividend)
+        .filter(Dividend.stock_id == stock_id)
+        .order_by(desc(Dividend.ex_dividend_date))
+        .all()
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════════

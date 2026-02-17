@@ -55,6 +55,7 @@ class Stock(Base):
     cash_flows     = relationship("CashFlow",         back_populates="stock", cascade="all, delete-orphan")
     ratios         = relationship("StockRatio",       back_populates="stock", cascade="all, delete-orphan")
     daily_klines   = relationship("DailyKline",       back_populates="stock")
+    dividends      = relationship("Dividend",         back_populates="stock", cascade="all, delete-orphan")
 
 
 # ── Daily Market Data ────────────────────────────────────────────────────────
@@ -100,6 +101,9 @@ class DailyKline(Base):
     dividend_per_share = Column(Float, nullable=True)
     dividend_yield     = Column(Float, nullable=True)
     ex_dividend_date   = Column(String, nullable=True)
+    payout_ratio       = Column(Float, nullable=True)
+    dividend_growth    = Column(Float, nullable=True)
+    payout_frequency   = Column(String(50), nullable=True)
 
     # Corporate actions
     adjustment_factor = Column(String, nullable=True)
@@ -355,3 +359,25 @@ class StockRatio(Base):
     beta              = Column(Numeric(8, 4), nullable=True)
 
     stock = relationship("Stock", back_populates="ratios")
+
+
+# ── Dividends ────────────────────────────────────────────────────────────────
+
+
+class Dividend(Base):
+    """
+    Historical dividend distributions for a stock.
+    One row per dividend event.
+    """
+    __tablename__ = "dividends"
+
+    id              = Column(Integer, primary_key=True, index=True)
+    stock_id        = Column(Integer, ForeignKey("stocks.id"), nullable=False, index=True)
+    ex_dividend_date = Column(Date, nullable=False, index=True)
+    record_date     = Column(Date, nullable=True)
+    pay_date        = Column(Date, nullable=True)
+    amount          = Column(Numeric(18, 4), nullable=False)
+    currency        = Column(String(10), nullable=True)   # e.g. "NGN"
+    frequency       = Column(String(20), nullable=True)   # e.g. "Annual", "Interim"
+
+    stock = relationship("Stock", back_populates="dividends")
