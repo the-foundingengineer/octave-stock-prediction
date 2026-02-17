@@ -144,13 +144,51 @@ class StockRelatedResponse(BaseModel):
         orm_mode = True
 
 
-class StockComparisonItem(BaseModel):
-    # Basic Info
+class IncomeStatementResponse(BaseModel):
+    id: int
+    stock_id: int
+    period_ending: str
+    period_type: str
+    revenue: Optional[float] = None
+    operating_revenue: Optional[float] = None
+    other_revenue: Optional[float] = None
+    revenue_growth_yoy: Optional[float] = None
+    cost_of_revenue: Optional[float] = None
+    gross_profit: Optional[float] = None
+    sga_expenses: Optional[float] = None
+    operating_income: Optional[float] = None
+    ebitda: Optional[float] = None
+    ebit: Optional[float] = None
+    interest_expense: Optional[float] = None
+    pretax_income: Optional[float] = None
+    income_tax: Optional[float] = None
+    net_income: Optional[float] = None
+    net_income_growth_yoy: Optional[float] = None
+    eps_basic: Optional[float] = None
+    eps_diluted: Optional[float] = None
+    eps_growth_yoy: Optional[float] = None
+    dividend_per_share: Optional[float] = None
+    shares_basic: Optional[int] = None
+    shares_diluted: Optional[int] = None
+
+    class Config:
+        orm_mode = True
+
+
+class StockWithIncomeStatementResponse(BaseModel):
+    id: int
     symbol: str
     name: Optional[str] = None
     sector: Optional[str] = None
     industry: Optional[str] = None
     exchange: Optional[str] = None
+    currency: Optional[str] = None
+    country: Optional[str] = None
+    website: Optional[str] = None
+    ceo: Optional[str] = None
+    employees: Optional[int] = None
+    fiscal_year_end: Optional[str] = None
+    income_statement: Optional[IncomeStatementResponse] = None
     website: Optional[str] = None
     country: Optional[str] = None
     employees: Optional[int] = None
