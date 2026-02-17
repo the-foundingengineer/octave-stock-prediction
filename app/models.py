@@ -56,6 +56,7 @@ class Stock(Base):
     ratios         = relationship("StockRatio",       back_populates="stock", cascade="all, delete-orphan")
     daily_klines   = relationship("DailyKline",       back_populates="stock")
     dividends      = relationship("Dividend",         back_populates="stock", cascade="all, delete-orphan")
+    revenue_history = relationship("RevenueHistory",  back_populates="stock", cascade="all, delete-orphan")
 
 
 # ── Daily Market Data ────────────────────────────────────────────────────────
@@ -104,6 +105,11 @@ class DailyKline(Base):
     payout_ratio       = Column(Float, nullable=True)
     dividend_growth    = Column(Float, nullable=True)
     payout_frequency   = Column(String(50), nullable=True)
+
+    # Revenue & Financial snapshots
+    revenue_ttm          = Column(Numeric(28, 2), nullable=True)
+    revenue_growth       = Column(Float, nullable=True) # TTM or latest growth
+    revenue_per_employee = Column(Numeric(28, 2), nullable=True)
 
     # Corporate actions
     adjustment_factor = Column(String, nullable=True)
@@ -373,11 +379,30 @@ class Dividend(Base):
 
     id              = Column(Integer, primary_key=True, index=True)
     stock_id        = Column(Integer, ForeignKey("stocks.id"), nullable=False, index=True)
-    ex_dividend_date = Column(Date, nullable=False, index=True)
-    record_date     = Column(Date, nullable=True)
-    pay_date        = Column(Date, nullable=True)
+    ex_dividend_date = Column(String, nullable=False, index=True)
+    record_date     = Column(String, nullable=True)
+    pay_date        = Column(String, nullable=True)
     amount          = Column(Numeric(18, 4), nullable=False)
     currency        = Column(String(10), nullable=True)   # e.g. "NGN"
     frequency       = Column(String(20), nullable=True)   # e.g. "Annual", "Interim"
 
     stock = relationship("Stock", back_populates="dividends")
+
+
+# ── Revenue History ──────────────────────────────────────────────────────────
+
+
+class RevenueHistory(Base):
+    """
+    Annual revenue history for a stock (Fiscal Year End).
+    """
+    __tablename__ = "revenue_history"
+
+    id              = Column(Integer, primary_key=True, index=True)
+    stock_id        = Column(Integer, ForeignKey("stocks.id"), nullable=False, index=True)
+    fiscal_year_end = Column(String, nullable=False, index=True)
+    revenue         = Column(Numeric(28, 2), nullable=False)
+    change          = Column(Numeric(28, 2), nullable=True)
+    growth          = Column(Float, nullable=True)
+
+    stock = relationship("Stock", back_populates="revenue_history")

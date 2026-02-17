@@ -116,6 +116,9 @@ class StockStatsResponse(BaseModel):
     payout_ratio: Optional[float] = None
     dividend_growth: Optional[float] = None
     payout_frequency: Optional[str] = None
+    revenue_ttm: Optional[float] = None
+    revenue_growth: Optional[float] = None
+    revenue_per_employee: Optional[float] = None
 
     class Config:
         from_attributes = True
@@ -360,6 +363,9 @@ class StockComparisonItem(BaseModel):
     payout_ratio: Optional[float] = None
     dividend_growth: Optional[float] = None
     payout_frequency: Optional[str] = None
+    revenue_ttm: Optional[float] = None
+    revenue_growth: Optional[float] = None
+    revenue_per_employee: Optional[float] = None
 
     class Config:
         from_attributes = True
@@ -400,6 +406,22 @@ class DividendResponse(BaseModel):
     amount: float
     currency: Optional[str] = None
     frequency: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+# ── Revenue History ──────────────────────────────────────────────────────────
+
+
+class RevenueHistoryResponse(BaseModel):
+    """Annual revenue record."""
+    id: int
+    stock_id: int
+    fiscal_year_end: str
+    revenue: float
+    change: Optional[float] = None
+    growth: Optional[float] = None
 
     class Config:
         from_attributes = True
