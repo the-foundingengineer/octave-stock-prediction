@@ -120,11 +120,11 @@ def get_stock_kline(db: Session, stock_id: int, interval: str, limit: int):
             continue
             
         key = get_group_key(r.date)
-        r_open = float(r.open)
-        r_high = float(r.high)
-        r_low = float(r.low)
-        r_close = float(r.close)
-        r_vol = float(r.volume or 0)
+        r_open = _safe_float(r.open)
+        r_high = _safe_float(r.high)
+        r_low = _safe_float(r.low)
+        r_close = _safe_float(r.close)
+        r_vol = _safe_float(r.volume or 0)
 
         if key not in groups:
             groups[key] = {
