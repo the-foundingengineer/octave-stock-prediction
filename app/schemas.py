@@ -143,3 +143,127 @@ class StockRelatedResponse(BaseModel):
     class Config:
         orm_mode = True
 
+
+class StockComparisonItem(BaseModel):
+    # Basic Info
+    symbol: str
+    name: Optional[str] = None
+    sector: Optional[str] = None
+    industry: Optional[str] = None
+    exchange: Optional[str] = None
+    website: Optional[str] = None
+    country: Optional[str] = None
+    employees: Optional[int] = None
+    founded: Optional[str] = None
+    ipo_date: Optional[str] = None
+    
+    # Price Data (Latest)
+    stock_price: Optional[float] = None
+    price_change_1d: Optional[float] = None
+    price_change_percent_1d: Optional[float] = None
+    open_price: Optional[float] = None
+    previous_close: Optional[float] = None
+    low_price: Optional[float] = None
+    high_price: Optional[float] = None
+    volume: Optional[int] = None
+    dollar_volume: Optional[float] = None
+    stock_price_date: Optional[str] = None
+    
+    # 52 Week
+    fifty_two_week_low: Optional[float] = None
+    fifty_two_week_high: Optional[float] = None
+    
+    # Valuation
+    market_cap: Optional[float] = None
+    enterprise_value: Optional[float] = None
+    pe_ratio: Optional[float] = None
+    forward_pe: Optional[float] = None
+    ps_ratio: Optional[float] = None
+    pb_ratio: Optional[float] = None
+    peg_ratio: Optional[float] = None
+    ev_sales: Optional[float] = None
+    ev_ebitda: Optional[float] = None
+    ev_ebit: Optional[float] = None
+    ev_fcf: Optional[float] = None
+    earnings_yield: Optional[float] = None
+    fcf_yield: Optional[float] = None
+    
+    # Financials (TTM/Recent)
+    revenue: Optional[float] = None
+    gross_profit: Optional[float] = None
+    operating_income: Optional[float] = None
+    net_income: Optional[float] = None
+    ebitda: Optional[float] = None
+    ebit: Optional[float] = None
+    eps: Optional[float] = None
+    revenue_growth: Optional[float] = None
+    net_income_growth: Optional[float] = None
+    eps_growth: Optional[float] = None
+    
+    # Margins
+    gross_margin: Optional[float] = None
+    operating_margin: Optional[float] = None
+    profit_margin: Optional[float] = None
+    fcf_margin: Optional[float] = None
+    
+    # Cash Flow
+    operating_cash_flow: Optional[float] = None
+    investing_cash_flow: Optional[float] = None
+    financing_cash_flow: Optional[float] = None
+    net_cash_flow: Optional[float] = None
+    capital_expenditures: Optional[float] = None
+    free_cash_flow: Optional[float] = None
+    
+    # Balance Sheet
+    total_cash: Optional[float] = None
+    total_debt: Optional[float] = None
+    net_cash_debt: Optional[float] = None
+    total_assets: Optional[float] = None
+    total_liabilities: Optional[float] = None
+    shareholders_equity: Optional[float] = None
+    working_capital: Optional[float] = None
+    book_value_per_share: Optional[float] = None
+    shares_outstanding: Optional[int] = None
+    
+    # Ratios
+    roe: Optional[float] = None
+    roa: Optional[float] = None
+    roic: Optional[float] = None
+    roce: Optional[float] = None
+    current_ratio: Optional[float] = None
+    quick_ratio: Optional[float] = None
+    debt_equity: Optional[float] = None
+    debt_ebitda: Optional[float] = None
+    interest_coverage: Optional[float] = None
+    altman_z_score: Optional[float] = None
+    piotroski_f_score: Optional[int] = None
+    
+    # Technicals
+    rsi: Optional[float] = None
+    beta: Optional[float] = None
+    ma_20: Optional[float] = None
+    ma_50: Optional[float] = None
+    ma_200: Optional[float] = None
+    
+    # Dividends
+    dividend_yield: Optional[float] = None
+    dividend_per_share: Optional[float] = None
+    ex_div_date: Optional[str] = None
+
+    class Config:
+        orm_mode = True
+
+class StockComparisonBrief(BaseModel):
+    id: int
+    symbol: str
+    sector: Optional[str] = None
+    rank: Optional[int] = None
+
+    class Config:
+        orm_mode = True
+
+class PopularComparisonResponse(BaseModel):
+    stocks: List[StockComparisonBrief]
+
+    class Config:
+        orm_mode = True

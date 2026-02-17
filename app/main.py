@@ -5,8 +5,8 @@ from sqlalchemy.orm import Session
 from typing import List
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.crud import create_stock_record, get_stocks, get_stock, get_stock_kline, get_stock_stats, get_stock_info
-from app.schemas import StockRecordCreate, StockRecord, Stock, KlineResponse, StockStatsResponse, StockInfoResponse
+from app.crud import create_stock_record, get_stocks, get_stock, get_stock_kline, get_stock_stats, get_stock_info, get_popular_comparisons, get_stock_comparison_details
+from app.schemas import StockRecordCreate, StockRecord, Stock, KlineResponse, StockStatsResponse, StockInfoResponse, PopularComparisonResponse, StockComparisonItem
 
 from app import models
 from app.database import SessionLocal, engine, get_db
@@ -83,9 +83,16 @@ def get_related(stock_id: int, limit: int = 10, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Stock related not found")
     return db_related
 
-@app.get("/stocks/popular_comparisons", response_model=list[StockPopularComparisonResponse])
-def get_popular_comparisons(db: Session = Depends(get_db)):
+@app.get("/stocks/popular_comparisons", response_model=PopularComparisonResponse)
+def read_popular_comparisons(db: Session = Depends(get_db)):
     db_popular_comparisons = get_popular_comparisons(db)
-    if db_popular_comparisons is None:
+    if not db_popular_comparisons:
         raise HTTPException(status_code=404, detail="Stock popular comparisons not found")
-    return db_popular_comparisons
+    return {"stocks": db_popular_comparisons}
+
+@app.get("/stocks/{stock_id}/comparison", response_model=StockComparisonItem)
+def get_comparison_details(stock_id: int, db: Session = Depends(get_db)):
+    db_details = get_stock_comparison_details(db, stock_id)
+    if not db_details:
+        raise HTTPException(status_code=404, detail="Stock comparison details not found")
+    return db_details
