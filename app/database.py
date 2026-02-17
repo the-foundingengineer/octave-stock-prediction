@@ -1,20 +1,31 @@
-from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, DeclarativeBase
+"""
+Database configuration and session management.
+
+Creates the SQLAlchemy engine, session factory, and base class
+from the DATABASE_URL environment variable.
+"""
+
 import os
+
 from dotenv import load_dotenv
+from sqlalchemy import create_engine
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 load_dotenv()
 
-sqlalchemy_database_url = os.getenv("DATABASE_URL")
+SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
 
-engine = create_engine(sqlalchemy_database_url)
+engine = create_engine(SQLALCHEMY_DATABASE_URL, echo=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+
 class Base(DeclarativeBase):
+    """Base class for all ORM models."""
     pass
 
+
 def get_db():
+    """FastAPI dependency that yields a database session and ensures cleanup."""
     db = SessionLocal()
     try:
         yield db
