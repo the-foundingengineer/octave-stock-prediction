@@ -81,6 +81,9 @@ def get_stock_kline(db: Session, stock_id: int, interval: str, limit: int):
         results.reverse() # Show latest first
         formatted = []
         for r in results:
+            if r.open is None or r.high is None or r.low is None or r.close is None:
+                continue
+
             formatted.append({
                 "date": str(r.date),
                 "open": _safe_float(r.open),
