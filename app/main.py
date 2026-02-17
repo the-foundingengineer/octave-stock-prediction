@@ -7,6 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.crud import create_stock_record, get_stocks, get_stock, get_stock_kline, get_stock_stats, get_stock_info, get_stock_by_income_statement
 from app.schemas import StockRecordCreate, StockRecord, Stock, KlineResponse, StockStatsResponse, StockInfoResponse, StockWithIncomeStatementResponse
+from app.crud import create_stock_record, get_stocks, get_stock, get_stock_kline, get_stock_stats, get_stock_info, get_popular_comparisons, get_stock_comparison_details
+from app.schemas import StockRecordCreate, StockRecord, Stock, KlineResponse, StockStatsResponse, StockInfoResponse, PopularComparisonResponse, StockComparisonItem
 
 from app import models
 from app.database import SessionLocal, engine, get_db
@@ -133,3 +135,16 @@ def get_income_statement(stock_id: int, db: Session = Depends(get_db)):
             "shares_diluted": income_stmt.shares_diluted,
         } if income_stmt else None
     }
+@app.get("/stocks/popular_comparisons", response_model=PopularComparisonResponse)
+def read_popular_comparisons(db: Session = Depends(get_db)):
+    db_popular_comparisons = get_popular_comparisons(db)
+    if not db_popular_comparisons:
+        raise HTTPException(status_code=404, detail="Stock popular comparisons not found")
+    return {"stocks": db_popular_comparisons}
+
+@app.get("/stocks/{stock_id}/comparison", response_model=StockComparisonItem)
+def get_comparison_details(stock_id: int, db: Session = Depends(get_db)):
+    db_details = get_stock_comparison_details(db, stock_id)
+    if not db_details:
+        raise HTTPException(status_code=404, detail="Stock comparison details not found")
+    return db_details
