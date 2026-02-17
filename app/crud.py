@@ -345,3 +345,12 @@ def _safe_float(val) -> float:
         return float(val)
     except (ValueError, TypeError):
         return 0.0
+    
+def get_stock_by_income_statement(db: Session, stock_id: int):
+    return (
+        db.query(Stock)
+        .join(IncomeStatement, Stock.id == IncomeStatement.stock_id)
+        .filter(Stock.id == stock_id)
+        .order_by(desc(IncomeStatement.period_ending))
+        .first()
+    )
