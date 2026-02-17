@@ -73,7 +73,12 @@ def get_stock_kline(db: Session, stock_id: int, interval: str, limit: int):
     daily_results = query.order_by(DailyKline.date.asc()).all() # Sort ASC for easier aggregation
     
     if not daily_results:
-        return {"symbol": symbol.upper(), "interval": interval, "klines": []}
+        return {
+            "stock_id": stock_id,
+            "symbol": symbol.upper(),
+            "interval": interval,
+            "klines": []
+        }
 
     if agg_key == 'day':
         # Daily is just formatting the latest N
@@ -92,7 +97,12 @@ def get_stock_kline(db: Session, stock_id: int, interval: str, limit: int):
                 "close": _safe_float(r.close),
                 "volume": _safe_float(r.volume)
             })
-        return {"symbol": symbol.upper(), "interval": interval, "klines": formatted}
+        return {
+            "stock_id": stock_id,
+            "symbol": symbol.upper(),
+            "interval": interval,
+            "klines": formatted
+        }
 
     # Helper to get grouping key
     def get_group_key(date_str):
