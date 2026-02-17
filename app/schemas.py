@@ -189,6 +189,17 @@ class StockWithIncomeStatementResponse(BaseModel):
     employees: Optional[int] = None
     fiscal_year_end: Optional[str] = None
     income_statement: Optional[IncomeStatementResponse] = None
+
+    class Config:
+        orm_mode = True
+
+class StockComparisonItem(BaseModel):
+    # Basic Info
+    symbol: str
+    name: Optional[str] = None
+    sector: Optional[str] = None
+    industry: Optional[str] = None
+    exchange: Optional[str] = None
     website: Optional[str] = None
     country: Optional[str] = None
     employees: Optional[int] = None

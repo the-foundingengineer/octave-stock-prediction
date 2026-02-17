@@ -94,20 +94,10 @@ def get_income_statement(stock_id: int, db: Session = Depends(get_db)):
     # Extract the latest income statement
     income_stmt = db_stock_with_income.income_stmts[0] if db_stock_with_income.income_stmts else None
     
-    return {
-        "id": db_stock_with_income.id,
-        "symbol": db_stock_with_income.symbol,
-        "name": db_stock_with_income.name,
-        "sector": db_stock_with_income.sector,
-        "industry": db_stock_with_income.industry,
-        "exchange": db_stock_with_income.exchange,
-        "currency": db_stock_with_income.currency,
-        "country": db_stock_with_income.country,
-        "website": db_stock_with_income.website,
-        "ceo": db_stock_with_income.ceo,
-        "employees": db_stock_with_income.employees,
-        "fiscal_year_end": db_stock_with_income.fiscal_year_end,
-        "income_statement": {
+    # Map to schema
+    formatted_income = None
+    if income_stmt:
+        formatted_income = {
             "id": income_stmt.id,
             "stock_id": income_stmt.stock_id,
             "period_ending": str(income_stmt.period_ending),
@@ -133,7 +123,22 @@ def get_income_statement(stock_id: int, db: Session = Depends(get_db)):
             "dividend_per_share": float(income_stmt.dividend_per_share) if income_stmt.dividend_per_share else None,
             "shares_basic": income_stmt.shares_basic,
             "shares_diluted": income_stmt.shares_diluted,
-        } if income_stmt else None
+        }
+
+    return {
+        "id": db_stock_with_income.id,
+        "symbol": db_stock_with_income.symbol,
+        "name": db_stock_with_income.name,
+        "sector": db_stock_with_income.sector,
+        "industry": db_stock_with_income.industry,
+        "exchange": db_stock_with_income.exchange,
+        "currency": db_stock_with_income.currency,
+        "country": db_stock_with_income.country,
+        "website": db_stock_with_income.website,
+        "ceo": db_stock_with_income.ceo,
+        "employees": db_stock_with_income.employees,
+        "fiscal_year_end": db_stock_with_income.fiscal_year_end,
+        "income_statement": formatted_income
     }
 @app.get("/stocks/popular_comparisons", response_model=PopularComparisonResponse)
 def read_popular_comparisons(db: Session = Depends(get_db)):
