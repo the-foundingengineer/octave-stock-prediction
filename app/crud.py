@@ -13,6 +13,7 @@ Public functions (used by route handlers in main.py):
     - get_stock_comparison_details     : Full comparison data for one stock
     - search_stocks                    : Search by symbol or name
     - get_bulk_comparison              : Klines + stats for multiple symbols
+    - get_market_cap_history           : Historical market cap
 """
 
 from datetime import datetime
@@ -23,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     BalanceSheet, CashFlow, DailyKline,
-    Dividend, IncomeStatement, Stock, StockRatio,
+    Dividend, IncomeStatement, MarketCapHistory, Stock, StockRatio, StockExecutive,
 )
 from app.schemas import StockRecordCreate
 
@@ -46,28 +47,57 @@ def _optional_float(val) -> Optional[float]:
     return float(val) if val else None
 
 
-def _get_latest_klines(db: Session, symbol: str, limit: int = 2) -> List[DailyKline]:
+def _resolve_stock(db: Session, stock_id: int) -> Optional[Stock]:
+    """Look up a Stock by primary key, or return None."""
+    return db.query(Stock).filter(Stock.id == stock_id).first()
+
+
+def _get_latest_klines(db: Session, stock_id: int, limit: int = 2) -> List[DailyKline]:
     """
-    Fetch the latest *limit* daily klines for *symbol*, ordered newest-first.
+    Fetch the latest *limit* daily klines for a stock, ordered newest-first.
     Used by stats, info, and comparison helpers.
     """
     return (
         db.query(DailyKline)
-        .filter(DailyKline.symbol == symbol)
+        .filter(DailyKline.stock_id == stock_id)
         .order_by(desc(DailyKline.date))
         .limit(limit)
         .all()
     )
 
 
-def _resolve_stock(db: Session, stock_id: int) -> Optional[Stock]:
-    """Look up a Stock by primary key, or return None."""
-    return db.query(Stock).filter(Stock.id == stock_id).first()
+def _get_latest_ratio(db: Session, stock_id: int) -> Optional[StockRatio]:
+    """Fetch the latest StockRatio row for a stock."""
+    return (
+        db.query(StockRatio)
+        .filter(StockRatio.stock_id == stock_id)
+        .order_by(desc(StockRatio.period_ending))
+        .first()
+    )
+
+
+def _get_latest_dividend(db: Session, stock_id: int) -> Optional[Dividend]:
+    """Fetch the most recent dividend for a stock."""
+    return (
+        db.query(Dividend)
+        .filter(Dividend.stock_id == stock_id)
+        .order_by(desc(Dividend.ex_dividend_date))
+        .first()
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════════
 #  Basic stock operations
 # ════════════════════════════════════════════════════════════════════════════
+
+
+def get_stock_profile(db: Session, stock_id: int) -> Optional[Stock]:
+    """Return a stock with its full profile and executives."""
+    return (
+        db.query(Stock)
+        .filter(Stock.id == stock_id)
+        .first()
+    )
 
 
 def get_stock(db: Session, stock_id: int) -> Optional[Stock]:
@@ -89,14 +119,19 @@ def get_stocks(db: Session, page: int, limit: int) -> List[Stock]:
 
 def create_stock_record(db: Session, stock: StockRecordCreate) -> DailyKline:
     """Insert a new daily kline record."""
+    # Resolve stock_id from symbol
+    stock_row = db.query(Stock).filter(Stock.symbol.ilike(stock.symbol)).first()
+    if not stock_row:
+        raise ValueError(f"Stock with symbol '{stock.symbol}' not found")
+
     db_stock = DailyKline(
+        stock_id=stock_row.id,
         date=stock.date,
         open=stock.open,
         high=stock.high,
         low=stock.low,
         close=stock.close,
         volume=stock.volume,
-        symbol=stock.symbol,
     )
     db.add(db_stock)
     db.commit()
@@ -156,20 +191,19 @@ def get_stock_kline(
     if not stock:
         return None
 
-    symbol = stock.symbol.upper()
     agg_key = _get_aggregation_key(interval)
 
     # Fetch all daily klines (ascending for aggregation)
     daily_results = (
         db.query(DailyKline)
-        .filter(DailyKline.symbol == symbol)
+        .filter(DailyKline.stock_id == stock_id)
         .order_by(DailyKline.date.asc())
         .all()
     )
 
     base_response = {
         "stock_id": stock_id,
-        "symbol": symbol,
+        "symbol": stock.symbol.upper(),
         "interval": interval,
     }
 
@@ -254,10 +288,13 @@ def get_stock_stats(db: Session, stock_id: int) -> Optional[Dict]:
     if not stock:
         return None
 
-    symbol = stock.symbol.upper()
-    klines = _get_latest_klines(db, symbol, limit=2)
+    klines = _get_latest_klines(db, stock_id, limit=2)
     latest = klines[0] if klines else None
     prev = klines[1] if len(klines) > 1 else None
+
+    # Latest financials
+    ratio = _get_latest_ratio(db, stock_id)
+    dividend = _get_latest_dividend(db, stock_id)
 
     # Latest TTM income statement (fallback to any FY)
     income = (
@@ -296,16 +333,16 @@ def get_stock_stats(db: Session, stock_id: int) -> Optional[Dict]:
 
     return {
         "stock_id": stock_id,
-        "symbol": symbol,
-        "market_cap": _optional_float(latest.market_cap) if latest else None,
+        "symbol": stock.symbol.upper(),
+        "market_cap": _optional_float(ratio.market_cap) if ratio else None,
         "revenue_ttm": _optional_float(income.revenue) if income else None,
         "net_income": _optional_float(income.net_income) if income else None,
         "eps": _optional_float(income.eps_basic) if income else None,
         "shares_outstanding": balance.shares_outstanding if balance else None,
-        "pe_ratio": latest.pe_ratio if latest else None,
-        "forward_pe": latest.forward_pe if latest else None,
-        "dividend": latest.dividend_per_share if latest else None,
-        "ex_dividend_date": latest.ex_dividend_date if latest else None,
+        "pe_ratio": _optional_float(ratio.pe_ratio) if ratio else None,
+        "forward_pe": None,  # Not stored independently; derive from ratio if needed
+        "dividend": _optional_float(dividend.amount) if dividend else None,
+        "ex_dividend_date": dividend.ex_dividend_date if dividend else None,
         "volume": latest.volume if latest else None,
         "avg_volume": latest.avg_volume_20d if latest else None,
         "open": latest.open if latest else None,
@@ -315,6 +352,11 @@ def get_stock_stats(db: Session, stock_id: int) -> Optional[Dict]:
         "beta": latest.beta if latest else None,
         "rsi": latest.rsi if latest else None,
         "earnings_date": None,
+        "payout_ratio": _optional_float(ratio.payout_ratio) if ratio else None,
+        "dividend_growth": None,
+        "payout_frequency": dividend.frequency if dividend else None,
+        "revenue_growth": _optional_float(income.revenue_growth_yoy) if income else None,
+        "revenue_per_employee": None,
     }
 
 
@@ -329,13 +371,12 @@ def get_stock_info(db: Session, stock_id: int) -> Optional[Dict]:
     if not stock:
         return None
 
-    symbol = stock.symbol.upper()
-    klines = _get_latest_klines(db, symbol, limit=1)
+    klines = _get_latest_klines(db, stock_id, limit=1)
     latest = klines[0] if klines else None
 
     return {
         "stock_id": stock_id,
-        "symbol": symbol,
+        "symbol": stock.symbol.upper(),
         "ipo_date": getattr(stock, "founded", None),
         "name": stock.name,
         "fifty_two_week_high": _safe_float(latest.week_52_high) if latest else None,
@@ -368,12 +409,7 @@ def get_stock_related(db: Session, stock_id: int, limit: int = 10) -> Optional[L
 
     results = []
     for s in related:
-        latest_kline = (
-            db.query(DailyKline)
-            .filter(DailyKline.symbol == s.symbol)
-            .order_by(desc(DailyKline.date))
-            .first()
-        )
+        latest_ratio = _get_latest_ratio(db, s.id)
         latest_income = (
             db.query(IncomeStatement)
             .filter(IncomeStatement.stock_id == s.id)
@@ -383,7 +419,7 @@ def get_stock_related(db: Session, stock_id: int, limit: int = 10) -> Optional[L
         results.append({
             "stock_id": s.id,
             "symbol": s.symbol,
-            "market_cap": _optional_float(latest_kline.market_cap) if latest_kline else None,
+            "market_cap": _optional_float(latest_ratio.market_cap) if latest_ratio else None,
             "revenue_ttm": _optional_float(latest_income.revenue) if latest_income else None,
         })
 
@@ -415,12 +451,20 @@ def get_stock_dividends(db: Session, stock_id: int) -> Optional[List[Dividend]]:
 
 def get_stock_by_income_statement(db: Session, stock_id: int) -> Optional[Stock]:
     """Return a Stock with its income_stmts relationship eagerly loadable."""
+
+    stock = _resolve_stock(db, stock_id)
+    if not stock:
+        return None
     return (
-        db.query(Stock)
-        .join(IncomeStatement, Stock.id == IncomeStatement.stock_id)
-        .filter(Stock.id == stock_id)
+        db.query(IncomeStatement)
+        .filter(IncomeStatement.stock_id == stock_id)
         .order_by(desc(IncomeStatement.period_ending))
-        .first()
+        .all()
+        # db.query(Stock)
+        # .join(IncomeStatement, Stock.id == IncomeStatement.stock_id)
+        # .filter(Stock.id == stock_id)
+        # .order_by(desc(IncomeStatement.period_ending))
+        # .first()
     )
 
 
@@ -468,13 +512,13 @@ def format_income_statement(income_stmt) -> Optional[Dict]:
 
 def get_popular_comparisons(db: Session) -> List[Dict]:
     """Return the top-2 stocks per sector ranked by market cap."""
-    # Subquery: latest kline date per symbol
-    latest_date_sq = (
+    # Subquery: latest ratio per stock (for market_cap)
+    latest_ratio_sq = (
         db.query(
-            DailyKline.symbol,
-            func.max(DailyKline.date).label("latest_date"),
+            StockRatio.stock_id,
+            func.max(StockRatio.period_ending).label("latest_period"),
         )
-        .group_by(DailyKline.symbol)
+        .group_by(StockRatio.stock_id)
         .subquery()
     )
 
@@ -485,14 +529,14 @@ def get_popular_comparisons(db: Session) -> List[Dict]:
             Stock.symbol,
             Stock.sector,
             func.row_number()
-            .over(partition_by=Stock.sector, order_by=desc(DailyKline.market_cap))
+            .over(partition_by=Stock.sector, order_by=desc(StockRatio.market_cap))
             .label("rank"),
         )
-        .join(DailyKline, Stock.symbol == DailyKline.symbol)
+        .join(StockRatio, Stock.id == StockRatio.stock_id)
         .join(
-            latest_date_sq,
-            (DailyKline.symbol == latest_date_sq.c.symbol)
-            & (DailyKline.date == latest_date_sq.c.latest_date),
+            latest_ratio_sq,
+            (StockRatio.stock_id == latest_ratio_sq.c.stock_id)
+            & (StockRatio.period_ending == latest_ratio_sq.c.latest_period),
         )
         .subquery()
     )
@@ -535,7 +579,7 @@ def _build_comparison_data(db: Session, stock: Stock) -> Dict:
     symbol = stock.symbol.upper()
 
     # Latest 2 klines for price & 1D change
-    klines = _get_latest_klines(db, symbol, limit=2)
+    klines = _get_latest_klines(db, stock.id, limit=2)
     latest = klines[0] if klines else None
     prev = klines[1] if len(klines) > 1 else None
 
@@ -558,12 +602,8 @@ def _build_comparison_data(db: Session, stock: Stock) -> Dict:
         .order_by(desc(CashFlow.period_ending))
         .first()
     )
-    ratio = (
-        db.query(StockRatio)
-        .filter(StockRatio.stock_id == stock.id)
-        .order_by(desc(StockRatio.period_ending))
-        .first()
-    )
+    ratio = _get_latest_ratio(db, stock.id)
+    dividend = _get_latest_dividend(db, stock.id)
 
     # 1-day price change
     price_change_1d = None
@@ -605,13 +645,13 @@ def _build_comparison_data(db: Session, stock: Stock) -> Dict:
         "fifty_two_week_low": latest.week_52_low if latest else None,
         "fifty_two_week_high": latest.week_52_high if latest else None,
 
-        # Valuation
-        "market_cap": _optional_float(latest.market_cap) if latest else None,
-        "enterprise_value": _optional_float(latest.enterprise_value) if latest else None,
-        "pe_ratio": latest.pe_ratio if latest else None,
-        "forward_pe": latest.forward_pe if latest else None,
-        "ps_ratio": latest.ps_ratio if latest else None,
-        "pb_ratio": latest.pb_ratio if latest else None,
+        # Valuation (from stock_ratios)
+        "market_cap": _optional_float(ratio.market_cap) if ratio else None,
+        "enterprise_value": _optional_float(ratio.enterprise_value) if ratio else None,
+        "pe_ratio": _optional_float(ratio.pe_ratio) if ratio else None,
+        "forward_pe": None,
+        "ps_ratio": _optional_float(ratio.ps_ratio) if ratio else None,
+        "pb_ratio": _optional_float(ratio.pb_ratio) if ratio else None,
         "peg_ratio": None,
         "ev_sales": _optional_float(ratio.ev_sales) if ratio else None,
         "ev_ebitda": _optional_float(ratio.ev_ebitda) if ratio else None,
@@ -670,21 +710,27 @@ def _build_comparison_data(db: Session, stock: Stock) -> Dict:
         "altman_z_score": _optional_float(ratio.altman_z_score) if ratio else None,
         "piotroski_f_score": ratio.piotroski_f_score if ratio else None,
 
-        # Technicals
+        # Technicals (still on DailyKline)
         "rsi": latest.rsi if latest else None,
         "beta": latest.beta if latest else None,
         "ma_20": None,
         "ma_50": latest.ma_50d if latest else None,
         "ma_200": latest.ma_200d if latest else None,
 
-        # Dividends
+        # Dividends (from dividends + stock_ratios)
         "dividend_yield": (
             _optional_float(ratio.dividend_yield)
             if ratio and ratio.dividend_yield
-            else (latest.dividend_yield if latest else None)
+            else None
         ),
-        "dividend_per_share": latest.dividend_per_share if latest else None,
-        "ex_div_date": latest.ex_dividend_date if latest else None,
+        "dividend_per_share": _optional_float(dividend.amount) if dividend else None,
+        "ex_div_date": dividend.ex_dividend_date if dividend else None,
+        "payout_ratio": _optional_float(ratio.payout_ratio) if ratio else None,
+        "dividend_growth": None,
+        "payout_frequency": dividend.frequency if dividend else None,
+        "revenue_ttm": _optional_float(income.revenue) if income else None,
+        "revenue_growth": _optional_float(income.revenue_growth_yoy) if income else None,
+        "revenue_per_employee": None,
     }
 
 
@@ -741,3 +787,40 @@ def get_bulk_comparison(
         })
 
     return results
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Market cap history
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def get_market_cap_history(
+    db: Session, stock_id: int, limit: int = 500
+) -> Optional[Dict]:
+    """Return historical market cap data for a stock, newest first."""
+    stock = _resolve_stock(db, stock_id)
+    if not stock:
+        return None
+
+    rows = (
+        db.query(MarketCapHistory)
+        .filter(MarketCapHistory.stock_id == stock_id)
+        .order_by(desc(MarketCapHistory.date))
+        .limit(limit)
+        .all()
+    )
+
+    return {
+        "stock_id": stock_id,
+        "symbol": stock.symbol.upper(),
+        "history": [
+            {
+                "id": r.id,
+                "stock_id": r.stock_id,
+                "date": r.date,
+                "market_cap": float(r.market_cap) if r.market_cap else None,
+                "frequency": r.frequency,
+            }
+            for r in rows
+        ],
+    }

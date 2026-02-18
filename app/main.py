@@ -29,6 +29,7 @@ from app.crud import (
     create_stock_record,
     format_income_statement,
     get_bulk_comparison,
+    get_market_cap_history,
     get_popular_comparisons,
     get_stock,
     get_stock_by_income_statement,
@@ -36,6 +37,7 @@ from app.crud import (
     get_stock_dividends,
     get_stock_info,
     get_stock_kline,
+    get_stock_profile,
     get_stock_related,
     get_stock_stats,
     get_stocks,
@@ -45,10 +47,13 @@ from app.schemas import (
     BulkComparisonResponse,
     DividendResponse,
     KlineResponse,
+    MarketCapHistoryResponse,
     PopularComparisonResponse,
     Stock,
     StockComparisonItem,
+    StockExecutiveResponse,
     StockInfoResponse,
+    StockProfileResponse,
     StockRecord,
     StockRecordCreate,
     StockRelatedResponse,
@@ -198,6 +203,21 @@ def get_dividends(stock_id: int, db: Session = Depends(get_db)):
     return result
 
 
+# ── Market Cap History ─────────────────────────────────────────────────────────
+
+
+@app.get("/stocks/{stock_id}/market-cap", response_model=MarketCapHistoryResponse)
+def get_market_cap(
+    stock_id: int,
+    limit: int = Query(500, ge=1, le=5000, description="Max records to return"),
+    db: Session = Depends(get_db),
+):
+    """Return historical market cap data for a stock."""
+    result = get_market_cap_history(db, stock_id, limit)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Stock not found")
+    return result
+
 # ── Financials ───────────────────────────────────────────────────────────────
 
 
@@ -249,6 +269,27 @@ def get_comparison_details(stock_id: int, db: Session = Depends(get_db)):
     if not result:
         raise HTTPException(status_code=404, detail="Stock comparison details not found")
     return result
+
+
+# ── Profile & Executives ─────────────────────────────────────────────────────
+
+
+@app.get("/stocks/{stock_id}/profile", response_model=StockProfileResponse)
+def get_profile(stock_id: int, db: Session = Depends(get_db)):
+    """Return the full company profile including executives."""
+    result = get_stock_profile(db, stock_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Stock profile not found")
+    return result
+
+
+@app.get("/stocks/{stock_id}/executives", response_model=List[StockExecutiveResponse])
+def get_executives(stock_id: int, db: Session = Depends(get_db)):
+    """Return the management team for a stock."""
+    result = get_stock_profile(db, stock_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Stock not found")
+    return result.executives
 
 
 # ── External refresh ─────────────────────────────────────────────────────────

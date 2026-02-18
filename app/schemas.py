@@ -46,19 +46,13 @@ class Stock(BaseModel):
     id: int
     symbol: str
     name: Optional[str] = None
-    outstanding_shares: Optional[int] = None
     sector: Optional[str] = None
     industry: Optional[str] = None
     description: Optional[str] = None
     website: Optional[str] = None
-    market_cap: Optional[str] = None
     currency: Optional[str] = None
     exchange: Optional[str] = None
     last_updated: Optional[str] = None
-    pe_ratio: Optional[str] = None
-    fifty_two_week_high: Optional[str] = None
-    fifty_two_week_low: Optional[str] = None
-    adjustment_factor: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -116,7 +110,6 @@ class StockStatsResponse(BaseModel):
     payout_ratio: Optional[float] = None
     dividend_growth: Optional[float] = None
     payout_frequency: Optional[str] = None
-    revenue_ttm: Optional[float] = None
     revenue_growth: Optional[float] = None
     revenue_per_employee: Optional[float] = None
 
@@ -208,6 +201,7 @@ class StockWithIncomeStatementResponse(BaseModel):
     ceo: Optional[str] = None
     employees: Optional[int] = None
     fiscal_year_end: Optional[str] = None
+    headquarters: Optional[str] = None
     income_statement: Optional[IncomeStatementResponse] = None
 
     class Config:
@@ -411,17 +405,66 @@ class DividendResponse(BaseModel):
         from_attributes = True
 
 
-# ── Revenue History ──────────────────────────────────────────────────────────
 
 
-class RevenueHistoryResponse(BaseModel):
-    """Annual revenue record."""
+
+# ── Market Cap History ───────────────────────────────────────────────────────
+
+
+class MarketCapHistoryItem(BaseModel):
+    """Single market cap history record."""
     id: int
     stock_id: int
-    fiscal_year_end: str
-    revenue: float
-    change: Optional[float] = None
-    growth: Optional[float] = None
+    date: str
+    market_cap: Optional[float] = None
+    frequency: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class MarketCapHistoryResponse(BaseModel):
+    """Response wrapper for market cap history endpoint."""
+    stock_id: int
+    symbol: str
+    history: List[MarketCapHistoryItem]
+
+    class Config:
+        from_attributes = True
+
+
+# ── Stock Profile & Executives ──────────────────────────────────────────────
+
+
+class StockExecutiveResponse(BaseModel):
+    """Management team member."""
+    id: int
+    name: str
+    title: Optional[str] = None
+    age: Optional[int] = None
+    since: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class StockProfileResponse(BaseModel):
+    """Detailed company profile."""
+    id: int
+    symbol: str
+    name: Optional[str] = None
+    description: Optional[str] = None
+    sector: Optional[str] = None
+    industry: Optional[str] = None
+    exchange: Optional[str] = None
+    currency: Optional[str] = None
+    country: Optional[str] = None
+    founded: Optional[str] = None
+    headquarters: Optional[str] = None
+    website: Optional[str] = None
+    employees: Optional[int] = None
+    ceo: Optional[str] = None
+    executives: List["StockExecutiveResponse"] = []
 
     class Config:
         from_attributes = True

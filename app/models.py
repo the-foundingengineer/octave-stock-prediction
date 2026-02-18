@@ -3,11 +3,14 @@ SQLAlchemy ORM models for the Octave stock prediction API.
 
 Tables:
     - stocks           : Static company profile (one row per ticker)
-    - daily_klines     : Daily OHLCV + technicals + valuation snapshot
+    - daily_klines     : Daily OHLCV + technicals
     - income_statements: Income statement by fiscal period
     - balance_sheets   : Balance sheet by fiscal period
     - cash_flows       : Cash flow statement by fiscal period
     - stock_ratios     : Valuation, profitability & leverage ratios
+    - dividends        : Historical dividend distributions
+    - stock_executives : Company management team
+    - market_cap_history: Historical market capitalization
 """
 
 from datetime import datetime
@@ -40,6 +43,7 @@ class Stock(Base):
     industry        = Column(String(100), nullable=True)
     description     = Column(Text, nullable=True)
     website         = Column(String(200), nullable=True)
+    headquarters    = Column(String(200), nullable=True)
     country         = Column(String(100), nullable=True)
     founded         = Column(String(10), nullable=True)
     ceo             = Column(String(100), nullable=True)
@@ -56,18 +60,24 @@ class Stock(Base):
     ratios         = relationship("StockRatio",       back_populates="stock", cascade="all, delete-orphan")
     daily_klines   = relationship("DailyKline",       back_populates="stock")
     dividends      = relationship("Dividend",         back_populates="stock", cascade="all, delete-orphan")
-    revenue_history = relationship("RevenueHistory",  back_populates="stock", cascade="all, delete-orphan")
+    executives     = relationship("StockExecutive",   back_populates="stock", cascade="all, delete-orphan")
+    market_cap_history = relationship("MarketCapHistory", back_populates="stock", cascade="all, delete-orphan")
 
 
 # ── Daily Market Data ────────────────────────────────────────────────────────
 
 
 class DailyKline(Base):
-    """Daily OHLCV candle with technical indicators and valuation snapshot."""
+    """
+    Daily OHLCV candle with technical indicators.
+
+    Valuation, dividend, and revenue snapshot columns have been moved
+    to their dedicated tables (stock_ratios, dividends, income_statements).
+    """
     __tablename__ = "daily_klines"
 
     id        = Column(Integer, primary_key=True, index=True)
-    symbol    = Column(String, ForeignKey("stocks.symbol"), index=True)
+    stock_id  = Column(Integer, ForeignKey("stocks.id"), nullable=False, index=True)
     date      = Column(String, index=True)
     timestamp = Column(BigInteger, nullable=True)
 
@@ -90,34 +100,13 @@ class DailyKline(Base):
     ma_200d        = Column(Float, nullable=True)
     beta           = Column(Float, nullable=True)
 
-    # Market valuation snapshot
-    market_cap       = Column(Numeric(28, 2), nullable=True)
-    enterprise_value = Column(Numeric(28, 2), nullable=True)
-    pe_ratio         = Column(Float, nullable=True)
-    forward_pe       = Column(Float, nullable=True)
-    ps_ratio         = Column(Float, nullable=True)
-    pb_ratio         = Column(Float, nullable=True)
-
-    # Dividends
-    dividend_per_share = Column(Float, nullable=True)
-    dividend_yield     = Column(Float, nullable=True)
-    ex_dividend_date   = Column(String, nullable=True)
-    payout_ratio       = Column(Float, nullable=True)
-    dividend_growth    = Column(Float, nullable=True)
-    payout_frequency   = Column(String(50), nullable=True)
-
-    # Revenue & Financial snapshots
-    revenue_ttm          = Column(Numeric(28, 2), nullable=True)
-    revenue_growth       = Column(Float, nullable=True) # TTM or latest growth
-    revenue_per_employee = Column(Numeric(28, 2), nullable=True)
-
     # Corporate actions
     adjustment_factor = Column(String, nullable=True)
 
     stock = relationship("Stock", back_populates="daily_klines")
 
     __table_args__ = (
-        UniqueConstraint("symbol", "date", name="uix_symbol_date"),
+        UniqueConstraint("stock_id", "date", name="uix_stock_id_date"),
     )
 
 
@@ -379,30 +368,50 @@ class Dividend(Base):
 
     id              = Column(Integer, primary_key=True, index=True)
     stock_id        = Column(Integer, ForeignKey("stocks.id"), nullable=False, index=True)
-    ex_dividend_date = Column(String, nullable=False, index=True)
+    ex_dividend_date = Column(String, nullable=True, index=True)
     record_date     = Column(String, nullable=True)
     pay_date        = Column(String, nullable=True)
-    amount          = Column(Numeric(18, 4), nullable=False)
+    amount          = Column(Numeric(18, 4), nullable=True)
     currency        = Column(String(10), nullable=True)   # e.g. "NGN"
     frequency       = Column(String(20), nullable=True)   # e.g. "Annual", "Interim"
 
     stock = relationship("Stock", back_populates="dividends")
 
 
-# ── Revenue History ──────────────────────────────────────────────────────────
+# ── Stock Executives ──────────────────────────────────────────────────────────
 
 
-class RevenueHistory(Base):
+class StockExecutive(Base):
     """
-    Annual revenue history for a stock (Fiscal Year End).
+    Key executives and management team for a company.
     """
-    __tablename__ = "revenue_history"
+    __tablename__ = "stock_executives"
 
-    id              = Column(Integer, primary_key=True, index=True)
-    stock_id        = Column(Integer, ForeignKey("stocks.id"), nullable=False, index=True)
-    fiscal_year_end = Column(String, nullable=False, index=True)
-    revenue         = Column(Numeric(28, 2), nullable=False)
-    change          = Column(Numeric(28, 2), nullable=True)
-    growth          = Column(Float, nullable=True)
+    id       = Column(Integer, primary_key=True, index=True)
+    stock_id = Column(Integer, ForeignKey("stocks.id"), nullable=False, index=True)
+    name     = Column(String(100), nullable=False)
+    title    = Column(String(200), nullable=True)
+    age      = Column(Integer, nullable=True)
+    since    = Column(String(50), nullable=True)
 
-    stock = relationship("Stock", back_populates="revenue_history")
+    stock = relationship("Stock", back_populates="executives")
+
+
+# ── Market Cap History ───────────────────────────────────────────────────────
+
+
+class MarketCapHistory(Base):
+    """
+    Historical market capitalization for a stock.
+    One row per (stock, date). Frequency indicates how the data was sourced.
+    """
+    __tablename__ = "market_cap_history"
+    __table_args__ = (UniqueConstraint("stock_id", "date", name="uq_mcap_stock_date"),)
+
+    id        = Column(Integer, primary_key=True, index=True)
+    stock_id  = Column(Integer, ForeignKey("stocks.id"), nullable=False, index=True)
+    date      = Column(String, nullable=False, index=True)
+    market_cap = Column(Numeric(28, 2), nullable=True)
+    frequency = Column(String(20), nullable=True)   # e.g. "daily", "annual"
+
+    stock = relationship("Stock", back_populates="market_cap_history")
