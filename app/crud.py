@@ -523,10 +523,14 @@ def _safe_float(val) -> float:
         return 0.0
     
 def get_stock_by_income_statement(db: Session, stock_id: int):
-    return (
-        db.query(Stock)
-        .join(IncomeStatement, Stock.id == IncomeStatement.stock_id)
-        .filter(Stock.id == stock_id)
+    stock = db.query(Stock).filter(Stock.id == stock_id).first()
+    if not stock:
+        return None
+    # Explicitly load all income statements for this stock, ordered by period
+    stock.income_stmts = (
+        db.query(IncomeStatement)
+        .filter(IncomeStatement.stock_id == stock_id)
         .order_by(desc(IncomeStatement.period_ending))
-        .first()
+        .all()
     )
+    return stock

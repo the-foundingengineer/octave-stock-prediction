@@ -6,7 +6,7 @@ from typing import List
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.crud import create_stock_record, get_stocks, get_stock, get_stock_kline, get_stock_stats, get_stock_info, get_stock_by_income_statement
-from app.schemas import StockRecordCreate, StockRecord, Stock, KlineResponse, StockStatsResponse, StockInfoResponse, StockWithIncomeStatementResponse
+from app.schemas import StockRecordCreate, StockRecord, Stock, KlineResponse, StockStatsResponse, StockInfoResponse, IncomeStatementResponse
 from app.crud import create_stock_record, get_stocks, get_stock, get_stock_kline, get_stock_stats, get_stock_info, get_popular_comparisons, get_stock_comparison_details
 from app.schemas import StockRecordCreate, StockRecord, Stock, KlineResponse, StockStatsResponse, StockInfoResponse, PopularComparisonResponse, StockComparisonItem
 
@@ -85,7 +85,7 @@ def get_related(stock_id: int, limit: int = 10, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Stock related not found")
     return db_related
 
-@app.get("/stocks/{stock_id}/financials/income-statement", response_model=StockWithIncomeStatementResponse)
+@app.get("/stocks/{stock_id}/financials/income-statement", response_model=IncomeStatementResponse)
 def get_income_statement(stock_id: int, db: Session = Depends(get_db)):
     db_stock_with_income = get_stock_by_income_statement(db, stock_id)
     if db_stock_with_income is None:
