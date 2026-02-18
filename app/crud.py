@@ -1,12 +1,112 @@
+"""
+CRUD operations and business logic for the Octave stock API.
+
+Public functions (used by route handlers in main.py):
+    - get_stock / get_stocks           : Basic stock lookups
+    - create_stock_record              : Insert a daily kline
+    - get_stock_kline                  : Aggregated OHLCV by interval
+    - get_stock_stats                  : Comprehensive stock statistics
+    - get_stock_info                   : Lightweight profile + technicals
+    - get_stock_related                : Same-sector stocks
+    - get_stock_by_income_statement    : Stock with latest income statement
+    - get_popular_comparisons          : Top-2 stocks per sector by market cap
+    - get_stock_comparison_details     : Full comparison data for one stock
+    - search_stocks                    : Search by symbol or name
+    - get_bulk_comparison              : Klines + stats for multiple symbols
+    - get_market_cap_history           : Historical market cap
+"""
+
+from datetime import datetime
+from typing import Dict, List, Optional
+
+from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, func, select, and_, text as sa_text
-from app.models import DailyKline, Stock, IncomeStatement, BalanceSheet, StockRatio, CashFlow
+
+from app.models import (
+    BalanceSheet, CashFlow, DailyKline,
+    Dividend, IncomeStatement, MarketCapHistory, Stock, StockRatio, StockExecutive,
+)
 from app.schemas import StockRecordCreate
 
-def get_stock(db: Session, stock_id: int):
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Private helpers
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def _safe_float(val) -> float:
+    """Convert *val* to float, returning 0.0 on failure."""
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _optional_float(val) -> Optional[float]:
+    """Convert *val* to float if truthy, otherwise return None."""
+    return float(val) if val else None
+
+
+def _resolve_stock(db: Session, stock_id: int) -> Optional[Stock]:
+    """Look up a Stock by primary key, or return None."""
     return db.query(Stock).filter(Stock.id == stock_id).first()
 
-def get_stocks(db: Session, page: int, limit: int):
+
+def _get_latest_klines(db: Session, stock_id: int, limit: int = 2) -> List[DailyKline]:
+    """
+    Fetch the latest *limit* daily klines for a stock, ordered newest-first.
+    Used by stats, info, and comparison helpers.
+    """
+    return (
+        db.query(DailyKline)
+        .filter(DailyKline.stock_id == stock_id)
+        .order_by(desc(DailyKline.date))
+        .limit(limit)
+        .all()
+    )
+
+
+def _get_latest_ratio(db: Session, stock_id: int) -> Optional[StockRatio]:
+    """Fetch the latest StockRatio row for a stock."""
+    return (
+        db.query(StockRatio)
+        .filter(StockRatio.stock_id == stock_id)
+        .order_by(desc(StockRatio.period_ending))
+        .first()
+    )
+
+
+def _get_latest_dividend(db: Session, stock_id: int) -> Optional[Dividend]:
+    """Fetch the most recent dividend for a stock."""
+    return (
+        db.query(Dividend)
+        .filter(Dividend.stock_id == stock_id)
+        .order_by(desc(Dividend.ex_dividend_date))
+        .first()
+    )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Basic stock operations
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def get_stock_profile(db: Session, stock_id: int) -> Optional[Stock]:
+    """Return a stock with its full profile and executives."""
+    return (
+        db.query(Stock)
+        .filter(Stock.id == stock_id)
+        .first()
+    )
+
+
+def get_stock(db: Session, stock_id: int) -> Optional[Stock]:
+    """Return a single stock by ID."""
+    return _resolve_stock(db, stock_id)
+
+
+def get_stocks(db: Session, page: int, limit: int) -> List[Stock]:
+    """Return a paginated list of stocks ordered by ID."""
     offset = (page - 1) * limit
     return (
         db.query(Stock)
@@ -16,123 +116,126 @@ def get_stocks(db: Session, page: int, limit: int):
         .all()
     )
 
-def get_unique_stock_names(db: Session):
-    results = db.query(Stock).all()
-    return [{"id": stock.id, "stock_name": stock.symbol.upper()} for stock in results]
 
-def create_stock_record(db: Session, stock: StockRecordCreate):
+def create_stock_record(db: Session, stock: StockRecordCreate) -> DailyKline:
+    """Insert a new daily kline record."""
+    # Resolve stock_id from symbol
+    stock_row = db.query(Stock).filter(Stock.symbol.ilike(stock.symbol)).first()
+    if not stock_row:
+        raise ValueError(f"Stock with symbol '{stock.symbol}' not found")
+
     db_stock = DailyKline(
+        stock_id=stock_row.id,
         date=stock.date,
         open=stock.open,
         high=stock.high,
         low=stock.low,
         close=stock.close,
         volume=stock.volume,
-        symbol=stock.symbol
     )
     db.add(db_stock)
     db.commit()
     db.refresh(db_stock)
     return db_stock
 
-def get_stock_kline(db: Session, stock_id: int, interval: str, limit: int):
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Kline aggregation
+# ════════════════════════════════════════════════════════════════════════════
+
+
+# Mapping of user-facing interval strings to canonical keys
+_INTERVAL_MAP = {
+    "1d": "day", "daily": "day", "day": "day",
+    "1w": "week", "weekly": "week", "week": "week",
+    "1m": "month", "monthly": "month", "month": "month",
+    "1y": "year", "yearly": "year", "year": "year",
+}
+
+
+def _get_aggregation_key(interval: str) -> str:
+    """Normalise an interval string to one of: day, week, month, year."""
+    return _INTERVAL_MAP.get(interval.lower(), "day")
+
+
+def _get_group_key(date_str: str, agg_key: str) -> str:
     """
-    Fetch and aggregate klines for various intervals using stock_id.
+    Return a grouping key for *date_str* according to *agg_key*.
+    E.g. agg_key='week' → '2025-W07', agg_key='month' → '2025-02'.
     """
-    from datetime import datetime
-    
-    stock = db.query(Stock).filter(Stock.id == stock_id).first()
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        dt = datetime.strptime(date_str, "%m/%d/%Y")
+
+    if agg_key == "week":
+        iso = dt.isocalendar()
+        return f"{iso[0]}-W{iso[1]:02d}"
+    if agg_key == "month":
+        return dt.strftime("%Y-%m")
+    if agg_key == "year":
+        return dt.strftime("%Y")
+    return date_str
+
+
+def get_stock_kline(
+    db: Session, stock_id: int, interval: str, limit: int
+) -> Optional[Dict]:
+    """
+    Fetch and aggregate klines for a stock.
+
+    Supports day / week / month / year intervals. Daily data is returned
+    directly; other intervals are aggregated from daily rows.
+    """
+    stock = _resolve_stock(db, stock_id)
     if not stock:
         return None
-    
-    symbol = stock.symbol.upper()
-    
-    # Standardize interval
-    interval = interval.lower()
-    if interval in ['1d', 'daily', 'day']:
-        agg_key = 'day'
-    elif interval in ['1w', 'weekly', 'week']:
-        agg_key = 'week'
-    elif interval in ['1m', 'monthly', 'month']:
-        agg_key = 'month'
-    elif interval in ['1y', 'yearly', 'year']:
-        agg_key = 'year'
-    else:
-        agg_key = 'day' # Default
 
-    # If limit=50 and interval=week, we need at least 50 * 5 = 250 daily records.
-    fetch_limit = limit
-    if agg_key == 'week': fetch_limit = limit * 7
-    elif agg_key == 'month': fetch_limit = limit * 31
-    elif agg_key == 'year': fetch_limit = limit * 366
-    
-    # Cap fetch_limit at 5000 to prevent OOM
-    fetch_limit = min(fetch_limit, 5000)
+    agg_key = _get_aggregation_key(interval)
 
-    query = db.query(DailyKline).filter(DailyKline.symbol == symbol.upper())
-    daily_results = query.order_by(DailyKline.date.asc()).all() # Sort ASC for easier aggregation
-    
+    # Fetch all daily klines (ascending for aggregation)
+    daily_results = (
+        db.query(DailyKline)
+        .filter(DailyKline.stock_id == stock_id)
+        .order_by(DailyKline.date.asc())
+        .all()
+    )
+
+    base_response = {
+        "stock_id": stock_id,
+        "symbol": stock.symbol.upper(),
+        "interval": interval,
+    }
+
     if not daily_results:
-        return {
-            "stock_id": stock_id,
-            "symbol": symbol.upper(),
-            "interval": interval,
-            "klines": []
-        }
+        return {**base_response, "klines": []}
 
-    if agg_key == 'day':
-        # Daily is just formatting the latest N
-        results = daily_results[-limit:] if len(daily_results) > limit else daily_results
-        results.reverse() # Show latest first
-        formatted = []
-        for r in results:
-            if r.open is None or r.high is None or r.low is None or r.close is None:
-                continue
-
-            formatted.append({
+    # ── Daily: just slice and reverse ─────────────────────────────────────
+    if agg_key == "day":
+        tail = daily_results[-limit:] if len(daily_results) > limit else daily_results
+        klines = [
+            {
                 "date": str(r.date),
                 "open": _safe_float(r.open),
                 "high": _safe_float(r.high),
                 "low": _safe_float(r.low),
                 "close": _safe_float(r.close),
-                "volume": _safe_float(r.volume)
-            })
-        return {
-            "stock_id": stock_id,
-            "symbol": symbol.upper(),
-            "interval": interval,
-            "klines": formatted
-        }
+                "volume": _safe_float(r.volume),
+            }
+            for r in reversed(tail)
+            if r.open is not None and r.close is not None
+        ]
+        return {**base_response, "klines": klines}
 
-    # Helper to get grouping key
-    def get_group_key(date_str):
-        # Handle both %Y-%m-%d and potentially other formats if needed, but standardize on %Y-%m-%d
-        try:
-            dt = datetime.strptime(date_str, '%Y-%m-%d')
-        except ValueError:
-            # Fallback for MM/DD/YYYY if present in DB
-            dt = datetime.strptime(date_str, '%m/%d/%Y')
-        
-        if agg_key == 'week':
-            # Use ISO week: (year, week_number)
-            isocal = dt.isocalendar()
-            return f"{isocal[0]}-W{isocal[1]:02d}"
-        elif agg_key == 'month':
-            return dt.strftime('%Y-%m')
-        elif agg_key == 'year':
-            return dt.strftime('%Y')
-        return date_str
+    # ── Aggregated intervals ──────────────────────────────────────────────
+    groups: Dict[str, Dict] = {}
+    group_order: List[str] = []
 
-    # Aggregate
-    groups = {}
-    group_order = []
-    
     for r in daily_results:
-        # Skip records with missing essential data to avoid float(None) errors
         if r.open is None or r.high is None or r.low is None or r.close is None:
             continue
-            
-        key = get_group_key(r.date)
+
+        key = _get_group_key(r.date, agg_key)
         r_open = _safe_float(r.open)
         r_high = _safe_float(r.high)
         r_low = _safe_float(r.low)
@@ -141,81 +244,74 @@ def get_stock_kline(db: Session, stock_id: int, interval: str, limit: int):
 
         if key not in groups:
             groups[key] = {
-                'date': r.date, 
-                'open': r_open,
-                'high': r_high,
-                'low': r_low,
-                'close': r_close,
-                'volume': r_vol
+                "date": r.date,
+                "open": r_open,
+                "high": r_high,
+                "low": r_low,
+                "close": r_close,
+                "volume": r_vol,
             }
             group_order.append(key)
         else:
             g = groups[key]
-            if r_high > g['high']: g['high'] = r_high
-            if r_low < g['low']: g['low'] = r_low
-            g['close'] = r_close
-            g['volume'] += r_vol
-    
-    # Format and apply limit
-    final_results = []
+            g["high"] = max(g["high"], r_high)
+            g["low"] = min(g["low"], r_low)
+            g["close"] = r_close
+            g["volume"] += r_vol
+
+    # Take the latest N groups
+    klines = []
     for key in reversed(group_order):
         g = groups[key]
-        final_results.append({
-            "date": str(g['date']),
-            "open": g['open'],
-            "high": g['high'],
-            "low": g['low'],
-            "close": g['close'],
-            "volume": g['volume']
+        klines.append({
+            "date": str(g["date"]),
+            "open": g["open"],
+            "high": g["high"],
+            "low": g["low"],
+            "close": g["close"],
+            "volume": g["volume"],
         })
-        if len(final_results) >= limit:
+        if len(klines) >= limit:
             break
-            
-    return {
-        "stock_id": stock_id,
-        "symbol": symbol,
-        "interval": interval,
-        "klines": final_results
-    }
 
-def get_stock_stats(db: Session, stock_id: int):
-    """
-    Aggregate comprehensive stats for a stock using stock_id.
-    """
-    stock = db.query(Stock).filter(Stock.id == stock_id).first()
+    return {**base_response, "klines": klines}
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Stock statistics
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def get_stock_stats(db: Session, stock_id: int) -> Optional[Dict]:
+    """Aggregate comprehensive statistics for a stock."""
+    stock = _resolve_stock(db, stock_id)
     if not stock:
         return None
-    
-    symbol = stock.symbol.upper()
 
-    # Latest 2 Klines for Price, Change, Previous Close, Ranges, RSI, etc.
-    latest_klines = (
-        db.query(DailyKline)
-        .filter(DailyKline.symbol == symbol)
-        .order_by(desc(DailyKline.date))
-        .limit(2)
-        .all()
-    )
-    
-    latest = latest_klines[0] if latest_klines else None
-    prev = latest_klines[1] if len(latest_klines) > 1 else None
+    klines = _get_latest_klines(db, stock_id, limit=2)
+    latest = klines[0] if klines else None
+    prev = klines[1] if len(klines) > 1 else None
 
-    # Latest TTM Income Statement
+    # Latest financials
+    ratio = _get_latest_ratio(db, stock_id)
+    dividend = _get_latest_dividend(db, stock_id)
+
+    # Latest TTM income statement (fallback to any FY)
     income = (
         db.query(IncomeStatement)
-        .filter(IncomeStatement.stock_id == stock.id, IncomeStatement.period_type == 'TTM')
+        .filter(IncomeStatement.stock_id == stock.id, IncomeStatement.period_type == "TTM")
         .order_by(desc(IncomeStatement.period_ending))
         .first()
     )
-    if not income: # Fallback to FY if TTM missing
-         income = (
+    if not income:
+        income = (
             db.query(IncomeStatement)
             .filter(IncomeStatement.stock_id == stock.id)
             .order_by(desc(IncomeStatement.period_ending))
             .first()
         )
 
-    # Latest Balance Sheet
+    # Latest balance sheet
     balance = (
         db.query(BalanceSheet)
         .filter(BalanceSheet.stock_id == stock.id)
@@ -223,183 +319,301 @@ def get_stock_stats(db: Session, stock_id: int):
         .first()
     )
 
-    # Day's Range calculation
-    day_range = None
-    if latest and latest.low and latest.high:
-        day_range = f"{latest.low:,.2f} - {latest.high:,.2f}"
-
-    # 52-Week Range
-    fifty_two_range = None
-    if latest and latest.week_52_low and latest.week_52_high:
-        fifty_two_range = f"{latest.week_52_low:,.2f} - {latest.week_52_high:,.2f}"
+    # Day range & 52-week range strings
+    day_range = (
+        f"{latest.low:,.2f} - {latest.high:,.2f}"
+        if latest and latest.low and latest.high
+        else None
+    )
+    fifty_two_range = (
+        f"{latest.week_52_low:,.2f} - {latest.week_52_high:,.2f}"
+        if latest and latest.week_52_low and latest.week_52_high
+        else None
+    )
 
     return {
         "stock_id": stock_id,
-        "symbol": symbol,
-        "market_cap": float(latest.market_cap) if latest and latest.market_cap else None,
-        "revenue_ttm": float(income.revenue) if income and income.revenue else None,
-        "net_income": float(income.net_income) if income and income.net_income else None,
-        "eps": float(income.eps_basic) if income and income.eps_basic else None,
-        "shares_outstanding": balance.shares_outstanding if balance and balance.shares_outstanding else None,
-        "pe_ratio": latest.pe_ratio if latest and latest.pe_ratio else None,
-        "forward_pe": latest.forward_pe if latest and latest.forward_pe else None,
-        "dividend": latest.dividend_per_share if latest and latest.dividend_per_share else None,
-        "ex_dividend_date": latest.ex_dividend_date if latest and latest.ex_dividend_date else None,
-        "volume": latest.volume if latest and latest.volume else None,
-        "avg_volume": latest.avg_volume_20d if latest and latest.avg_volume_20d else None,
-        "open": latest.open if latest and latest.open else None,
+        "symbol": stock.symbol.upper(),
+        "market_cap": _optional_float(ratio.market_cap) if ratio else None,
+        "revenue_ttm": _optional_float(income.revenue) if income else None,
+        "net_income": _optional_float(income.net_income) if income else None,
+        "eps": _optional_float(income.eps_basic) if income else None,
+        "shares_outstanding": balance.shares_outstanding if balance else None,
+        "pe_ratio": _optional_float(ratio.pe_ratio) if ratio else None,
+        "forward_pe": None,  # Not stored independently; derive from ratio if needed
+        "dividend": _optional_float(dividend.amount) if dividend else None,
+        "ex_dividend_date": dividend.ex_dividend_date if dividend else None,
+        "volume": latest.volume if latest else None,
+        "avg_volume": latest.avg_volume_20d if latest else None,
+        "open": latest.open if latest else None,
         "previous_close": prev.close if prev and prev.close else None,
         "day_range": day_range,
         "fifty_two_week_range": fifty_two_range,
-        "beta": latest.beta if latest and latest.beta else None,
-        "rsi": latest.rsi if latest and latest.rsi else None,
-        "earnings_date": None # Not captured in current specific models but field is there for future
+        "beta": latest.beta if latest else None,
+        "rsi": latest.rsi if latest else None,
+        "earnings_date": None,
+        "payout_ratio": _optional_float(ratio.payout_ratio) if ratio else None,
+        "dividend_growth": None,
+        "payout_frequency": dividend.frequency if dividend else None,
+        "revenue_growth": _optional_float(income.revenue_growth_yoy) if income else None,
+        "revenue_per_employee": None,
     }
 
-def get_stock_info(db: Session, stock_id: int):
-    stock = db.query(Stock).filter(Stock.id == stock_id).first()
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Stock info
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def get_stock_info(db: Session, stock_id: int) -> Optional[Dict]:
+    """Return lightweight profile + technical indicators."""
+    stock = _resolve_stock(db, stock_id)
     if not stock:
         return None
-    
-    symbol = stock.symbol.upper()
 
-    latest_klines = (
-        db.query(DailyKline)
-        .filter(DailyKline.symbol == symbol)
-        .order_by(desc(DailyKline.date))
-        .limit(2)
-        .all()
-    )
-    
-    latest = latest_klines[0] if latest_klines else None
-    prev = latest_klines[1] if len(latest_klines) > 1 else None
-
+    klines = _get_latest_klines(db, stock_id, limit=1)
+    latest = klines[0] if klines else None
 
     return {
         "stock_id": stock_id,
-        "symbol": symbol,
-        "ipo_date": getattr(stock, 'founded', None),
+        "symbol": stock.symbol.upper(),
+        "ipo_date": getattr(stock, "founded", None),
         "name": stock.name,
         "fifty_two_week_high": _safe_float(latest.week_52_high) if latest else None,
         "fifty_two_week_low": _safe_float(latest.week_52_low) if latest else None,
         "fifty_day_moving_average": _safe_float(latest.ma_50d) if latest else None,
         "sector": stock.sector,
         "industry": stock.industry,
-        "sentiment": getattr(stock, 'sentiment', None),
-        "sp_score": getattr(stock, 'sp_score', None),
+        "sentiment": getattr(stock, "sentiment", None),
+        "sp_score": getattr(stock, "sp_score", None),
     }
 
-    
-def get_stock_related(db: Session, stock_id: int, limit: int = 10):
-    stock = db.query(Stock).filter(Stock.id == stock_id).first()
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Related stocks
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def get_stock_related(db: Session, stock_id: int, limit: int = 10) -> Optional[List[Dict]]:
+    """Return stocks in the same sector, with their latest market cap and revenue."""
+    stock = _resolve_stock(db, stock_id)
     if not stock:
         return None
-    
-    # Fetch related stocks in the same sector, excluding the current one
-    related_stocks = (
+
+    related = (
         db.query(Stock)
-        .filter(Stock.sector == stock.sector)
-        .filter(Stock.id != stock_id)
+        .filter(Stock.sector == stock.sector, Stock.id != stock_id)
         .limit(limit)
         .all()
     )
 
     results = []
-    for s in related_stocks:
-        # Fetch latest metrics for each related stock
-        # Using similar logic to get_stock_stats but simplified
-        latest_kline = (
-            db.query(DailyKline)
-            .filter(DailyKline.symbol == s.symbol)
-            .order_by(desc(DailyKline.date))
-            .first()
-        )
-        
+    for s in related:
+        latest_ratio = _get_latest_ratio(db, s.id)
         latest_income = (
             db.query(IncomeStatement)
             .filter(IncomeStatement.stock_id == s.id)
             .order_by(desc(IncomeStatement.period_ending))
             .first()
         )
-
         results.append({
             "stock_id": s.id,
             "symbol": s.symbol,
-            "market_cap": float(latest_kline.market_cap) if latest_kline and latest_kline.market_cap else None,
-            "revenue_ttm": float(latest_income.revenue) if latest_income and latest_income.revenue else None,
+            "market_cap": _optional_float(latest_ratio.market_cap) if latest_ratio else None,
+            "revenue_ttm": _optional_float(latest_income.revenue) if latest_income else None,
         })
 
     return results
 
 
-def get_popular_comparisons(db: Session):
-    latest_kline_date_sub = db.query(
-        DailyKline.symbol,
-        func.max(DailyKline.date).label("latest_date")
-    ).group_by(DailyKline.symbol).subquery()
+# ════════════════════════════════════════════════════════════════════════════
+#  Dividends
+# ════════════════════════════════════════════════════════════════════════════
 
-    ranked_stocks_sub = db.query(
-        Stock.id,
-        Stock.symbol,
-        Stock.sector,
-        func.row_number().over(
-            partition_by=Stock.sector,
-            order_by=desc(DailyKline.market_cap)
-        ).label("rank")
-    ).join(DailyKline, Stock.symbol == DailyKline.symbol)\
-     .join(
-         latest_kline_date_sub,
-         (DailyKline.symbol == latest_kline_date_sub.c.symbol) & 
-         (DailyKline.date == latest_kline_date_sub.c.latest_date)
-     ).subquery()
 
-    # Query subquery columns explicitly
-    top_stocks = db.query(
-        ranked_stocks_sub.c.id,
-        ranked_stocks_sub.c.symbol,
-        ranked_stocks_sub.c.sector,
-        ranked_stocks_sub.c.rank
-    ).filter(ranked_stocks_sub.c.rank <= 2).all()
-
-    return [
-        {
-            "id": s.id,
-            "symbol": s.symbol,
-            "sector": s.sector,
-            "rank": s.rank
-        } for s in top_stocks
-    ]
-
-def get_stock_comparison_details(db: Session, stock_id: int):
-    stock = db.query(Stock).filter(Stock.id == stock_id).first()
+def get_stock_dividends(db: Session, stock_id: int) -> Optional[List[Dividend]]:
+    """Return all historical dividends for a stock, ordered by ex-dividend date."""
+    stock = _resolve_stock(db, stock_id)
     if not stock:
         return None
-    return _get_stock_comparison_data(db, stock.id, stock.symbol)
+    return (
+        db.query(Dividend)
+        .filter(Dividend.stock_id == stock_id)
+        .order_by(desc(Dividend.ex_dividend_date))
+        .all()
+    )
 
-def _get_stock_comparison_data(db: Session, stock_id: int, symbol: str):
-    # Fetch data from all tables
-    stock = db.query(Stock).filter(Stock.id == stock_id).first()
-    
-    # Latest 2 Klines for 1D Change
-    klines = db.query(DailyKline).filter(DailyKline.symbol == symbol).order_by(desc(DailyKline.date)).limit(2).all()
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Income statement
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def get_stock_by_income_statement(db: Session, stock_id: int) -> Optional[Stock]:
+    """Return a Stock with its income_stmts relationship eagerly loadable."""
+
+    stock = _resolve_stock(db, stock_id)
+    if not stock:
+        return None
+    return (
+        db.query(IncomeStatement)
+        .filter(IncomeStatement.stock_id == stock_id)
+        .order_by(desc(IncomeStatement.period_ending))
+        .all()
+        # db.query(Stock)
+        # .join(IncomeStatement, Stock.id == IncomeStatement.stock_id)
+        # .filter(Stock.id == stock_id)
+        # .order_by(desc(IncomeStatement.period_ending))
+        # .first()
+    )
+
+
+def format_income_statement(income_stmt) -> Optional[Dict]:
+    """
+    Convert an IncomeStatement ORM object into a plain dict
+    suitable for the API response.
+    """
+    if not income_stmt:
+        return None
+
+    return {
+        "id": income_stmt.id,
+        "stock_id": income_stmt.stock_id,
+        "period_ending": str(income_stmt.period_ending),
+        "period_type": income_stmt.period_type,
+        "revenue": _optional_float(income_stmt.revenue),
+        "operating_revenue": _optional_float(income_stmt.operating_revenue),
+        "other_revenue": _optional_float(income_stmt.other_revenue),
+        "revenue_growth_yoy": _optional_float(income_stmt.revenue_growth_yoy),
+        "cost_of_revenue": _optional_float(income_stmt.cost_of_revenue),
+        "gross_profit": _optional_float(income_stmt.gross_profit),
+        "sga_expenses": _optional_float(income_stmt.sga_expenses),
+        "operating_income": _optional_float(income_stmt.operating_income),
+        "ebitda": _optional_float(income_stmt.ebitda),
+        "ebit": _optional_float(income_stmt.ebit),
+        "interest_expense": _optional_float(income_stmt.interest_expense),
+        "pretax_income": _optional_float(income_stmt.pretax_income),
+        "income_tax": _optional_float(income_stmt.income_tax),
+        "net_income": _optional_float(income_stmt.net_income),
+        "net_income_growth_yoy": _optional_float(income_stmt.net_income_growth_yoy),
+        "eps_basic": _optional_float(income_stmt.eps_basic),
+        "eps_diluted": _optional_float(income_stmt.eps_diluted),
+        "eps_growth_yoy": _optional_float(income_stmt.eps_growth_yoy),
+        "dividend_per_share": _optional_float(income_stmt.dividend_per_share),
+        "shares_basic": income_stmt.shares_basic,
+        "shares_diluted": income_stmt.shares_diluted,
+    }
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Popular comparisons
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def get_popular_comparisons(db: Session) -> List[Dict]:
+    """Return the top-2 stocks per sector ranked by market cap."""
+    # Subquery: latest ratio per stock (for market_cap)
+    latest_ratio_sq = (
+        db.query(
+            StockRatio.stock_id,
+            func.max(StockRatio.period_ending).label("latest_period"),
+        )
+        .group_by(StockRatio.stock_id)
+        .subquery()
+    )
+
+    # Subquery: rank stocks within each sector by market cap
+    ranked_sq = (
+        db.query(
+            Stock.id,
+            Stock.symbol,
+            Stock.sector,
+            func.row_number()
+            .over(partition_by=Stock.sector, order_by=desc(StockRatio.market_cap))
+            .label("rank"),
+        )
+        .join(StockRatio, Stock.id == StockRatio.stock_id)
+        .join(
+            latest_ratio_sq,
+            (StockRatio.stock_id == latest_ratio_sq.c.stock_id)
+            & (StockRatio.period_ending == latest_ratio_sq.c.latest_period),
+        )
+        .subquery()
+    )
+
+    rows = (
+        db.query(
+            ranked_sq.c.id,
+            ranked_sq.c.symbol,
+            ranked_sq.c.sector,
+            ranked_sq.c.rank,
+        )
+        .filter(ranked_sq.c.rank <= 2)
+        .all()
+    )
+
+    return [
+        {"id": r.id, "symbol": r.symbol, "sector": r.sector, "rank": r.rank}
+        for r in rows
+    ]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Stock comparison details
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def get_stock_comparison_details(db: Session, stock_id: int) -> Optional[Dict]:
+    """Return the full comparison data dict for a single stock."""
+    stock = _resolve_stock(db, stock_id)
+    if not stock:
+        return None
+    return _build_comparison_data(db, stock)
+
+
+def _build_comparison_data(db: Session, stock: Stock) -> Dict:
+    """
+    Assemble comprehensive comparison data for *stock* by pulling from
+    klines, income statements, balance sheets, cash flows, and ratios.
+    """
+    symbol = stock.symbol.upper()
+
+    # Latest 2 klines for price & 1D change
+    klines = _get_latest_klines(db, stock.id, limit=2)
     latest = klines[0] if klines else None
     prev = klines[1] if len(klines) > 1 else None
-    
-    # Latest Financials
-    income = db.query(IncomeStatement).filter(IncomeStatement.stock_id == stock_id).order_by(desc(IncomeStatement.period_ending)).first()
-    balance = db.query(BalanceSheet).filter(BalanceSheet.stock_id == stock_id).order_by(desc(BalanceSheet.period_ending)).first()
-    cash = db.query(CashFlow).filter(CashFlow.stock_id == stock_id).order_by(desc(CashFlow.period_ending)).first()
-    ratio = db.query(StockRatio).filter(StockRatio.stock_id == stock_id).order_by(desc(StockRatio.period_ending)).first()
 
-    # Calculate 1D Change
-    p_change_1d = None
-    p_change_pct_1d = None
+    # Latest financials
+    income = (
+        db.query(IncomeStatement)
+        .filter(IncomeStatement.stock_id == stock.id)
+        .order_by(desc(IncomeStatement.period_ending))
+        .first()
+    )
+    balance = (
+        db.query(BalanceSheet)
+        .filter(BalanceSheet.stock_id == stock.id)
+        .order_by(desc(BalanceSheet.period_ending))
+        .first()
+    )
+    cash = (
+        db.query(CashFlow)
+        .filter(CashFlow.stock_id == stock.id)
+        .order_by(desc(CashFlow.period_ending))
+        .first()
+    )
+    ratio = _get_latest_ratio(db, stock.id)
+    dividend = _get_latest_dividend(db, stock.id)
+
+    # 1-day price change
+    price_change_1d = None
+    price_change_pct_1d = None
     if latest and prev and latest.close and prev.close:
-        p_change_1d = float(latest.close - prev.close)
-        p_change_pct_1d = float((latest.close - prev.close) / prev.close * 100)
+        price_change_1d = float(latest.close - prev.close)
+        price_change_pct_1d = float((latest.close - prev.close) / prev.close * 100)
 
-    # Build comparison item
     return {
+        # Basic info
         "symbol": symbol,
         "name": stock.name,
         "sector": stock.sector,
@@ -409,128 +623,204 @@ def _get_stock_comparison_data(db: Session, stock_id: int, symbol: str):
         "country": stock.country,
         "employees": stock.employees,
         "founded": stock.founded,
-        "ipo_date": None, 
-        
-        "stock_price": float(latest.close) if latest and latest.close else None,
-        "price_change_1d": p_change_1d,
-        "price_change_percent_1d": p_change_pct_1d,
-        "open_price": float(latest.open) if latest and latest.open else None,
-        "previous_close": float(prev.close) if prev and prev.close else None,
-        "low_price": float(latest.low) if latest and latest.low else None,
-        "high_price": float(latest.high) if latest and latest.high else None,
+        "ipo_date": None,
+
+        # Price
+        "stock_price": _optional_float(latest.close) if latest else None,
+        "price_change_1d": price_change_1d,
+        "price_change_percent_1d": price_change_pct_1d,
+        "open_price": _optional_float(latest.open) if latest else None,
+        "previous_close": _optional_float(prev.close) if prev else None,
+        "low_price": _optional_float(latest.low) if latest else None,
+        "high_price": _optional_float(latest.high) if latest else None,
         "volume": latest.volume if latest else None,
-        "dollar_volume": float(latest.volume * latest.close) if latest and latest.volume and latest.close else None,
+        "dollar_volume": (
+            float(latest.volume * latest.close)
+            if latest and latest.volume and latest.close
+            else None
+        ),
         "stock_price_date": latest.date if latest else None,
-        
+
+        # 52-week
         "fifty_two_week_low": latest.week_52_low if latest else None,
         "fifty_two_week_high": latest.week_52_high if latest else None,
-        
-        "market_cap": float(latest.market_cap) if latest and latest.market_cap else None,
-        "enterprise_value": float(latest.enterprise_value) if latest and latest.enterprise_value else None,
-        "pe_ratio": latest.pe_ratio if latest else None,
-        "forward_pe": latest.forward_pe if latest else None,
-        "ps_ratio": latest.ps_ratio if latest else None,
-        "pb_ratio": latest.pb_ratio if latest else None,
-        "peg_ratio": None, 
-        "ev_sales": float(ratio.ev_sales) if ratio and ratio.ev_sales else None,
-        "ev_ebitda": float(ratio.ev_ebitda) if ratio and ratio.ev_ebitda else None,
-        "ev_ebit": float(ratio.ev_ebit) if ratio and ratio.ev_ebit else None,
-        "ev_fcf": float(ratio.ev_fcf) if ratio and ratio.ev_fcf else None,
-        "earnings_yield": float(ratio.earnings_yield) if ratio and ratio.earnings_yield else None,
-        "fcf_yield": float(ratio.fcf_yield) if ratio and ratio.fcf_yield else None,
-        
-        "revenue": float(income.revenue) if income and income.revenue else None,
-        "gross_profit": float(income.gross_profit) if income and income.gross_profit else None,
-        "operating_income": float(income.operating_income) if income and income.operating_income else None,
-        "net_income": float(income.net_income) if income and income.net_income else None,
-        "ebitda": float(income.ebitda) if income and income.ebitda else None,
-        "ebit": float(income.ebit) if income and income.ebit else None,
-        "eps": float(income.eps_basic) if income and income.eps_basic else None,
-        "revenue_growth": float(income.revenue_growth_yoy) if income and income.revenue_growth_yoy else None,
-        "net_income_growth": float(income.net_income_growth_yoy) if income and income.net_income_growth_yoy else None,
-        "eps_growth": float(income.eps_growth_yoy) if income and income.eps_growth_yoy else None,
-        
-        "gross_margin": float(income.gross_margin) if income and income.gross_margin else None,
-        "operating_margin": float(income.operating_margin) if income and income.operating_margin else None,
-        "profit_margin": float(income.profit_margin) if income and income.profit_margin else None,
-        "fcf_margin": float(income.fcf_margin) if income and income.fcf_margin else None,
-        
-        "operating_cash_flow": float(cash.operating_cash_flow) if cash and cash.operating_cash_flow else None,
-        "investing_cash_flow": float(cash.investing_cash_flow) if cash and cash.investing_cash_flow else None,
-        "financing_cash_flow": float(cash.financing_cash_flow) if cash and cash.financing_cash_flow else None,
-        "net_cash_flow": float(cash.net_cash_flow) if cash and cash.net_cash_flow else None,
-        "capital_expenditures": float(cash.capex) if cash and cash.capex else None,
-        "free_cash_flow": float(cash.free_cash_flow) if cash and cash.free_cash_flow else None,
-        
-        "total_cash": float(balance.cash_and_st_investments) if balance and balance.cash_and_st_investments else None,
-        "total_debt": float(balance.total_debt) if balance and balance.total_debt else None,
-        "net_cash_debt": float(balance.net_cash_debt) if balance and balance.net_cash_debt else None,
-        "total_assets": float(balance.total_assets) if balance and balance.total_assets else None,
-        "total_liabilities": float(balance.total_liabilities) if balance and balance.total_liabilities else None,
-        "shareholders_equity": float(balance.shareholders_equity) if balance and balance.shareholders_equity else None,
-        "working_capital": float(balance.working_capital) if balance and balance.working_capital else None,
-        "book_value_per_share": float(balance.book_value_per_share) if balance and balance.book_value_per_share else None,
+
+        # Valuation (from stock_ratios)
+        "market_cap": _optional_float(ratio.market_cap) if ratio else None,
+        "enterprise_value": _optional_float(ratio.enterprise_value) if ratio else None,
+        "pe_ratio": _optional_float(ratio.pe_ratio) if ratio else None,
+        "forward_pe": None,
+        "ps_ratio": _optional_float(ratio.ps_ratio) if ratio else None,
+        "pb_ratio": _optional_float(ratio.pb_ratio) if ratio else None,
+        "peg_ratio": None,
+        "ev_sales": _optional_float(ratio.ev_sales) if ratio else None,
+        "ev_ebitda": _optional_float(ratio.ev_ebitda) if ratio else None,
+        "ev_ebit": _optional_float(ratio.ev_ebit) if ratio else None,
+        "ev_fcf": _optional_float(ratio.ev_fcf) if ratio else None,
+        "earnings_yield": _optional_float(ratio.earnings_yield) if ratio else None,
+        "fcf_yield": _optional_float(ratio.fcf_yield) if ratio else None,
+
+        # Financials
+        "revenue": _optional_float(income.revenue) if income else None,
+        "gross_profit": _optional_float(income.gross_profit) if income else None,
+        "operating_income": _optional_float(income.operating_income) if income else None,
+        "net_income": _optional_float(income.net_income) if income else None,
+        "ebitda": _optional_float(income.ebitda) if income else None,
+        "ebit": _optional_float(income.ebit) if income else None,
+        "eps": _optional_float(income.eps_basic) if income else None,
+        "revenue_growth": _optional_float(income.revenue_growth_yoy) if income else None,
+        "net_income_growth": _optional_float(income.net_income_growth_yoy) if income else None,
+        "eps_growth": _optional_float(income.eps_growth_yoy) if income else None,
+
+        # Margins
+        "gross_margin": _optional_float(income.gross_margin) if income else None,
+        "operating_margin": _optional_float(income.operating_margin) if income else None,
+        "profit_margin": _optional_float(income.profit_margin) if income else None,
+        "fcf_margin": _optional_float(income.fcf_margin) if income else None,
+
+        # Cash flow
+        "operating_cash_flow": _optional_float(cash.operating_cash_flow) if cash else None,
+        "investing_cash_flow": _optional_float(cash.investing_cash_flow) if cash else None,
+        "financing_cash_flow": _optional_float(cash.financing_cash_flow) if cash else None,
+        "net_cash_flow": _optional_float(cash.net_cash_flow) if cash else None,
+        "capital_expenditures": _optional_float(cash.capex) if cash else None,
+        "free_cash_flow": _optional_float(cash.free_cash_flow) if cash else None,
+
+        # Balance sheet
+        "total_cash": _optional_float(balance.cash_and_st_investments) if balance else None,
+        "total_debt": _optional_float(balance.total_debt) if balance else None,
+        "net_cash_debt": _optional_float(balance.net_cash_debt) if balance else None,
+        "total_assets": _optional_float(balance.total_assets) if balance else None,
+        "total_liabilities": _optional_float(balance.total_liabilities) if balance else None,
+        "shareholders_equity": _optional_float(balance.shareholders_equity) if balance else None,
+        "working_capital": _optional_float(balance.working_capital) if balance else None,
+        "book_value_per_share": _optional_float(balance.book_value_per_share) if balance else None,
         "shares_outstanding": balance.shares_outstanding if balance else None,
-        
-        "roe": float(ratio.roe) if ratio and ratio.roe else None,
-        "roa": float(ratio.roa) if ratio and ratio.roa else None,
-        "roic": float(ratio.roic) if ratio and ratio.roic else None,
-        "roce": float(ratio.roce) if ratio and ratio.roce else None,
-        "current_ratio": float(ratio.current_ratio) if ratio and ratio.current_ratio else None,
-        "quick_ratio": float(ratio.quick_ratio) if ratio and ratio.quick_ratio else None,
-        "debt_equity": float(ratio.debt_equity) if ratio and ratio.debt_equity else None,
-        "debt_ebitda": float(ratio.debt_ebitda) if ratio and ratio.debt_ebitda else None,
-        "interest_coverage": float(ratio.interest_coverage) if ratio and ratio.interest_coverage else None,
-        "altman_z_score": float(ratio.altman_z_score) if ratio and ratio.altman_z_score else None,
+
+        # Ratios
+        "roe": _optional_float(ratio.roe) if ratio else None,
+        "roa": _optional_float(ratio.roa) if ratio else None,
+        "roic": _optional_float(ratio.roic) if ratio else None,
+        "roce": _optional_float(ratio.roce) if ratio else None,
+        "current_ratio": _optional_float(ratio.current_ratio) if ratio else None,
+        "quick_ratio": _optional_float(ratio.quick_ratio) if ratio else None,
+        "debt_equity": _optional_float(ratio.debt_equity) if ratio else None,
+        "debt_ebitda": _optional_float(ratio.debt_ebitda) if ratio else None,
+        "interest_coverage": _optional_float(ratio.interest_coverage) if ratio else None,
+        "altman_z_score": _optional_float(ratio.altman_z_score) if ratio else None,
         "piotroski_f_score": ratio.piotroski_f_score if ratio else None,
-        
+
+        # Technicals (still on DailyKline)
         "rsi": latest.rsi if latest else None,
         "beta": latest.beta if latest else None,
-        "ma_20": None, 
+        "ma_20": None,
         "ma_50": latest.ma_50d if latest else None,
         "ma_200": latest.ma_200d if latest else None,
-        
-        "dividend_yield": float(ratio.dividend_yield) if ratio and ratio.dividend_yield else (latest.dividend_yield if latest else None),
-        "dividend_per_share": latest.dividend_per_share if latest else None,
-        "ex_div_date": latest.ex_dividend_date if latest else None,
+
+        # Dividends (from dividends + stock_ratios)
+        "dividend_yield": (
+            _optional_float(ratio.dividend_yield)
+            if ratio and ratio.dividend_yield
+            else None
+        ),
+        "dividend_per_share": _optional_float(dividend.amount) if dividend else None,
+        "ex_div_date": dividend.ex_dividend_date if dividend else None,
+        "payout_ratio": _optional_float(ratio.payout_ratio) if ratio else None,
+        "dividend_growth": None,
+        "payout_frequency": dividend.frequency if dividend else None,
+        "revenue_ttm": _optional_float(income.revenue) if income else None,
+        "revenue_growth": _optional_float(income.revenue_growth_yoy) if income else None,
+        "revenue_per_employee": None,
     }
 
-def _parse_volume(vol_str: str) -> float:
-    """Parse volume strings like '1.05M', '939.04K', '0.00K' into floats."""
-    if not vol_str:
-        return 0.0
-    vol_str = vol_str.strip().upper()
-    try:
-        if vol_str.endswith("M"):
-            return float(vol_str[:-1]) * 1_000_000
-        elif vol_str.endswith("K"):
-            return float(vol_str[:-1]) * 1_000
-        elif vol_str.endswith("B"):
-            return float(vol_str[:-1]) * 1_000_000_000
-        else:
-            return float(vol_str.replace(",", ""))
-    except (ValueError, TypeError):
-        return 0.0
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Search
+# ════════════════════════════════════════════════════════════════════════════
 
 
-
-
-def _safe_float(val) -> float:
-    """Safely convert a string to float, returning 0.0 on failure."""
-    try:
-        return float(val)
-    except (ValueError, TypeError):
-        return 0.0
-    
-def get_stock_by_income_statement(db: Session, stock_id: int):
-    stock = db.query(Stock).filter(Stock.id == stock_id).first()
-    if not stock:
-        return None
-    # Explicitly load all income statements for this stock, ordered by period
-    stock.income_stmts = (
-        db.query(IncomeStatement)
-        .filter(IncomeStatement.stock_id == stock_id)
-        .order_by(desc(IncomeStatement.period_ending))
+def search_stocks(db: Session, query: str, limit: int = 10) -> List[Stock]:
+    """
+    Search stocks by symbol or name using case-insensitive LIKE.
+    Returns up to *limit* matching Stock rows.
+    """
+    pattern = f"%{query}%"
+    return (
+        db.query(Stock)
+        .filter(
+            (Stock.symbol.ilike(pattern)) | (Stock.name.ilike(pattern))
+        )
+        .limit(limit)
         .all()
     )
-    return stock
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Bulk comparison
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def get_bulk_comparison(
+    db: Session,
+    symbols: List[str],
+    interval: str = "week",
+    kline_limit: int = 52,
+) -> List[Dict]:
+    """
+    Fetch klines + stats for multiple symbols in one call.
+    Used by the /stocks/compare endpoint.
+    """
+    results = []
+    for sym in symbols:
+        stock = db.query(Stock).filter(Stock.symbol.ilike(sym.strip())).first()
+        if not stock:
+            continue
+
+        kline_data = get_stock_kline(db, stock.id, interval, kline_limit)
+        stats_data = get_stock_stats(db, stock.id)
+
+        results.append({
+            "stock_id": stock.id,
+            "symbol": stock.symbol.upper(),
+            "klines": kline_data["klines"] if kline_data else [],
+            "stats": stats_data,
+        })
+
+    return results
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Market cap history
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def get_market_cap_history(
+    db: Session, stock_id: int, limit: int = 500
+) -> Optional[Dict]:
+    """Return historical market cap data for a stock, newest first."""
+    stock = _resolve_stock(db, stock_id)
+    if not stock:
+        return None
+
+    rows = (
+        db.query(MarketCapHistory)
+        .filter(MarketCapHistory.stock_id == stock_id)
+        .order_by(desc(MarketCapHistory.date))
+        .limit(limit)
+        .all()
+    )
+
+    return {
+        "stock_id": stock_id,
+        "symbol": stock.symbol.upper(),
+        "history": [
+            {
+                "id": r.id,
+                "stock_id": r.stock_id,
+                "date": r.date,
+                "market_cap": float(r.market_cap) if r.market_cap else None,
+                "frequency": r.frequency,
+            }
+            for r in rows
+        ],
+    }
