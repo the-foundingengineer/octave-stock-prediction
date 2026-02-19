@@ -973,6 +973,7 @@ def get_stocks_dashboard(db: Session, page: int = 1, limit: int = 20) -> Dict:
         ]
 
         items.append({
+            "id": s.id,
             "symbol": s.symbol.upper(),
             "name": s.name,
             "price": float(latest.close) if latest.close else None,

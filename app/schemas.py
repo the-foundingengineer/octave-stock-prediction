@@ -449,6 +449,7 @@ class SparklinePoint(BaseModel):
 
 class DashboardStockItem(BaseModel):
     """Metrics and sparkline for a single stock on the dashboard."""
+    id: int
     symbol: str
     name: Optional[str] = None
     price: Optional[float] = None
