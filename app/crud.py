@@ -824,3 +824,88 @@ def get_market_cap_history(
             for r in rows
         ],
     }
+
+
+def get_metric_comparison(
+    db: Session,
+    symbols: List[str],
+    metric: str,
+    limit: int = 20,
+) -> List[Dict]:
+    """
+    Fetch historical data for a specific metric across multiple stocks.
+    Supported metrics: revenue, market_cap, net_income, eps, free_cash_flow,
+    pe_ratio, pb_ratio, ps_ratio.
+    """
+    results = []
+    metric = metric.lower()
+
+    for sym in symbols:
+        stock = db.query(Stock).filter(Stock.symbol.ilike(sym.strip())).first()
+        if not stock:
+            continue
+
+        data_points = []
+
+        if metric == "market_cap":
+            # Primary source: MarketCapHistory
+            rows = (
+                db.query(MarketCapHistory)
+                .filter(MarketCapHistory.stock_id == stock.id)
+                .order_by(desc(MarketCapHistory.date))
+                .limit(limit)
+                .all()
+            )
+            data_points = [
+                {"date": str(r.date), "value": float(r.market_cap) if r.market_cap else None}
+                for r in rows
+            ]
+        elif metric in ["revenue", "net_income", "eps", "free_cash_flow"]:
+            # Primary source: IncomeStatement (period_type='FY' or 'TTM')
+            field_map = {
+                "revenue": IncomeStatement.revenue,
+                "net_income": IncomeStatement.net_income,
+                "eps": IncomeStatement.eps_basic,
+                "free_cash_flow": IncomeStatement.free_cash_flow,
+            }
+            rows = (
+                db.query(IncomeStatement.period_ending, field_map[metric])
+                .filter(IncomeStatement.stock_id == stock.id)
+                .order_by(desc(IncomeStatement.period_ending))
+                .limit(limit)
+                .all()
+            )
+            data_points = [
+                {"date": str(r[0]), "value": float(r[1]) if r[1] else None}
+                for r in rows
+            ]
+        elif metric in ["pe_ratio", "pb_ratio", "ps_ratio"]:
+            # Primary source: StockRatio
+            field_map = {
+                "pe_ratio": StockRatio.pe_ratio,
+                "pb_ratio": StockRatio.pb_ratio,
+                "ps_ratio": StockRatio.ps_ratio,
+            }
+            rows = (
+                db.query(StockRatio.period_ending, field_map[metric])
+                .filter(StockRatio.stock_id == stock.id)
+                .order_by(desc(StockRatio.period_ending))
+                .limit(limit)
+                .all()
+            )
+            data_points = [
+                {"date": str(r[0]), "value": float(r[1]) if r[1] else None}
+                for r in rows
+            ]
+
+        # Ensure data is chronological (oldest first for charts)
+        data_points.reverse()
+
+        results.append({
+            "stock_id": stock.id,
+            "symbol": stock.symbol.upper(),
+            "metric": metric,
+            "data": data_points,
+        })
+
+    return results

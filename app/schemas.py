@@ -388,6 +388,35 @@ class BulkComparisonResponse(BaseModel):
         from_attributes = True
 
 
+# ── Metric Comparison (Time Series) ──────────────────────────────────────────
+
+
+class MetricDataPoint(BaseModel):
+    """Single data point for a metric over time."""
+    date: str
+    value: Optional[float] = None
+
+
+class StockMetricComparison(BaseModel):
+    """Historical data for a specific metric for one stock."""
+    stock_id: int
+    symbol: str
+    metric: str
+    data: List[MetricDataPoint]
+
+    class Config:
+        from_attributes = True
+
+
+class MetricComparisonResponse(BaseModel):
+    """Response wrapper for multi-stock metric comparison."""
+    metric: str
+    comparisons: List[StockMetricComparison]
+
+    class Config:
+        from_attributes = True
+
+
 # ── Dividends ────────────────────────────────────────────────────────────────
 
 
