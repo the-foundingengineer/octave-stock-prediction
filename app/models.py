@@ -37,7 +37,7 @@ class Stock(Base):
     id              = Column(Integer, primary_key=True, index=True)
     symbol          = Column(String(20), unique=True, index=True, nullable=False)
     name            = Column(String(200), nullable=True)
-    exchange        = Column(String(50), nullable=True)
+    stock_exchange  = Column(String(50), nullable=True)
     currency        = Column(String(10), nullable=True)
     sector          = Column(String(100), nullable=True)
     industry        = Column(String(100), nullable=True)
@@ -51,6 +51,10 @@ class Stock(Base):
     fiscal_year_end = Column(String(20), nullable=True)
     sic_code        = Column(String(10), nullable=True)
     reporting_currency = Column(String(10), nullable=True)
+    isin            = Column(String(20), nullable=True, index=True)
+    ipo_date        = Column(Date, nullable=True)
+    sentiment       = Column(String(50), nullable=True)
+    sp_score        = Column(Integer, nullable=True)
     last_updated    = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships

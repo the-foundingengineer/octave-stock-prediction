@@ -377,15 +377,15 @@ def get_stock_info(db: Session, stock_id: int) -> Optional[Dict]:
     return {
         "stock_id": stock_id,
         "symbol": stock.symbol.upper(),
-        "ipo_date": getattr(stock, "founded", None),
+        "ipo_date": str(stock.ipo_date) if stock.ipo_date else None,
         "name": stock.name,
         "fifty_two_week_high": _safe_float(latest.week_52_high) if latest else None,
         "fifty_two_week_low": _safe_float(latest.week_52_low) if latest else None,
         "fifty_day_moving_average": _safe_float(latest.ma_50d) if latest else None,
         "sector": stock.sector,
         "industry": stock.industry,
-        "sentiment": getattr(stock, "sentiment", None),
-        "sp_score": getattr(stock, "sp_score", None),
+        "sentiment": stock.sentiment,
+        "sp_score": stock.sp_score,
     }
 
 
