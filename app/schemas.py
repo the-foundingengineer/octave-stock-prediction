@@ -52,7 +52,7 @@ class Stock(BaseModel):
     description: Optional[str] = None
     website: Optional[str] = None
     currency: Optional[str] = None
-    exchange: Optional[str] = None
+    stock_exchange: Optional[str] = None
     last_updated: Optional[str] = None
 
     class Config:
@@ -195,7 +195,7 @@ class StockWithIncomeStatementResponse(BaseModel):
     name: Optional[str] = None
     sector: Optional[str] = None
     industry: Optional[str] = None
-    exchange: Optional[str] = None
+    stock_exchange: Optional[str] = None
     currency: Optional[str] = None
     country: Optional[str] = None
     website: Optional[str] = None
@@ -256,7 +256,7 @@ class StockComparisonItem(BaseModel):
     name: Optional[str] = None
     sector: Optional[str] = None
     industry: Optional[str] = None
-    exchange: Optional[str] = None
+    stock_exchange: Optional[str] = None
     website: Optional[str] = None
     country: Optional[str] = None
     employees: Optional[int] = None

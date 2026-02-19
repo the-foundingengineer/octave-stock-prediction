@@ -62,6 +62,13 @@ class Stock(Base):
     dividends      = relationship("Dividend",         back_populates="stock", cascade="all, delete-orphan")
     executives     = relationship("StockExecutive",   back_populates="stock", cascade="all, delete-orphan")
     market_cap_history = relationship("MarketCapHistory", back_populates="stock", cascade="all, delete-orphan")
+    metrics            = relationship("StockMetric",      back_populates="stock", cascade="all, delete-orphan")
+    metric_history     = relationship("MetricHistory",    back_populates="stock", cascade="all, delete-orphan")
+    employee_history   = relationship("EmployeeHistory",  back_populates="stock", cascade="all, delete-orphan")
+    analyst_ratings    = relationship("AnalystRating",    back_populates="stock", cascade="all, delete-orphan")
+    analyst_forecast   = relationship("AnalystForecast",  back_populates="stock", uselist=False, cascade="all, delete-orphan")
+
+
 
 
 # ── Daily Market Data ────────────────────────────────────────────────────────
@@ -415,3 +422,132 @@ class MarketCapHistory(Base):
     frequency = Column(String(20), nullable=True)   # e.g. "daily", "annual"
 
     stock = relationship("Stock", back_populates="market_cap_history")
+
+
+# ── Stock Metrics (synthesized or scraped) ───────────────────────────────────
+
+
+class StockMetric(Base):
+    """
+    Key financial metrics over time.
+    One row per (stock, period).
+    """
+    __tablename__ = "stock_metrics"
+    __table_args__ = (UniqueConstraint("stock_id", "period_end", name="uq_metric_period"),)
+
+    id         = Column(Integer, primary_key=True, index=True)
+    stock_id   = Column(Integer, ForeignKey("stocks.id"), nullable=False, index=True)
+    period_end = Column(Date, nullable=False)
+
+    # Valuation
+    stock_price = Column(Numeric(18, 4), nullable=True)
+    market_cap  = Column(Numeric(28, 2), nullable=True)
+    pe_ratio    = Column(Numeric(12, 4), nullable=True)
+    pb_ratio    = Column(Numeric(12, 4), nullable=True)
+    ps_ratio    = Column(Numeric(12, 4), nullable=True)
+    ev_ebitda   = Column(Numeric(12, 4), nullable=True)
+
+    # Income
+    revenue          = Column(Numeric(24, 2), nullable=True)
+    gross_profit     = Column(Numeric(24, 2), nullable=True)
+    operating_income = Column(Numeric(24, 2), nullable=True)
+    net_income       = Column(Numeric(24, 2), nullable=True)
+    ebitda           = Column(Numeric(24, 2), nullable=True)
+    eps_basic        = Column(Numeric(14, 4), nullable=True)
+    eps_diluted      = Column(Numeric(14, 4), nullable=True)
+
+    # Cash Flow
+    free_cash_flow = Column(Numeric(24, 2), nullable=True)
+    operating_cf   = Column(Numeric(24, 2), nullable=True)
+
+    # Balance Sheet
+    total_assets = Column(Numeric(24, 2), nullable=True)
+    total_debt   = Column(Numeric(24, 2), nullable=True)
+    total_equity = Column(Numeric(24, 2), nullable=True)
+
+    # Shares / Divs
+    shares_basic       = Column(BigInteger, nullable=True)
+    shares_diluted     = Column(BigInteger, nullable=True)
+    dividend_per_share = Column(Numeric(14, 4), nullable=True)
+
+    # Margins / Returns
+    roe              = Column(Numeric(10, 4), nullable=True)
+    roa              = Column(Numeric(10, 4), nullable=True)
+    gross_margin     = Column(Numeric(10, 4), nullable=True)
+    operating_margin = Column(Numeric(10, 4), nullable=True)
+    profit_margin    = Column(Numeric(10, 4), nullable=True)
+
+    stock = relationship("Stock", back_populates="metrics")
+
+
+class MetricHistory(Base):
+    """
+    Timeline of a specific metric (e.g. 'revenue', 'pe_ratio') scraped from
+    dedicated metric pages.
+    """
+    __tablename__ = "metric_history"
+    __table_args__ = (UniqueConstraint("stock_id", "metric_name", "period_end", name="uq_metric_hist"),)
+
+    id          = Column(Integer, primary_key=True, index=True)
+    stock_id    = Column(Integer, ForeignKey("stocks.id"), nullable=False, index=True)
+    metric_name = Column(String(50), nullable=False, index=True)
+    period_end  = Column(Date, nullable=False)
+    value       = Column(Numeric(28, 4), nullable=True)
+    change_pct  = Column(Numeric(10, 4), nullable=True)
+
+    stock = relationship("Stock", back_populates="metric_history")
+
+
+class EmployeeHistory(Base):
+    """
+    Historical employee count.
+    """
+    __tablename__ = "employee_history"
+    __table_args__ = (UniqueConstraint("stock_id", "period_end", name="uq_emp_hist"),)
+
+    id         = Column(Integer, primary_key=True, index=True)
+    stock_id   = Column(Integer, ForeignKey("stocks.id"), nullable=False, index=True)
+    period_end = Column(Date, nullable=False)
+    employees  = Column(Integer, nullable=True)
+    change_pct = Column(Numeric(10, 4), nullable=True)
+
+    stock = relationship("Stock", back_populates="employee_history")
+
+
+class AnalystForecast(Base):
+    """
+    Consensus analyst forecasts and price targets.
+    """
+    __tablename__ = "analyst_forecasts"
+
+    id             = Column(Integer, primary_key=True, index=True)
+    stock_id       = Column(Integer, ForeignKey("stocks.id"), nullable=False, unique=True, index=True)
+    consensus      = Column(String(50), nullable=True)
+    target_high    = Column(Numeric(18, 4), nullable=True)
+    target_low     = Column(Numeric(18, 4), nullable=True)
+    target_median  = Column(Numeric(18, 4), nullable=True)
+    target_average = Column(Numeric(18, 4), nullable=True)
+
+    stock = relationship("Stock", back_populates="analyst_forecast")
+
+
+class AnalystRating(Base):
+    """
+    Individual analyst ratings and price target changes.
+    """
+    __tablename__ = "analyst_ratings"
+    __table_args__ = (UniqueConstraint("stock_id", "analyst_firm", "rating_date", name="uq_analyst_rating"),)
+
+    id           = Column(Integer, primary_key=True, index=True)
+    stock_id     = Column(Integer, ForeignKey("stocks.id"), nullable=False, index=True)
+    analyst_firm = Column(String(100), nullable=False)
+    rating_date  = Column(String, nullable=True)
+    rating_from  = Column(String(50), nullable=True)
+    rating_to    = Column(String(50), nullable=True)
+    action       = Column(String(50), nullable=True)
+    target_from  = Column(Numeric(18, 4), nullable=True)
+    target_to    = Column(Numeric(18, 4), nullable=True)
+
+    stock = relationship("Stock", back_populates="analyst_ratings")
+
+

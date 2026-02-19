@@ -618,12 +618,12 @@ def _build_comparison_data(db: Session, stock: Stock) -> Dict:
         "name": stock.name,
         "sector": stock.sector,
         "industry": stock.industry,
-        "exchange": stock.exchange,
+        "stock_exchange": stock.stock_exchange,
         "website": stock.website,
         "country": stock.country,
         "employees": stock.employees,
         "founded": stock.founded,
-        "ipo_date": None,
+        "ipo_date": stock.ipo_date,
 
         # Price
         "stock_price": _optional_float(latest.close) if latest else None,
