@@ -909,3 +909,84 @@ def get_metric_comparison(
         })
 
     return results
+
+
+def get_stocks_dashboard(db: Session, page: int = 1, limit: int = 20) -> Dict:
+    """
+    Fetch a list of stocks with their latest metrics, price performance,
+    and a 7-day sparkline.
+    """
+    offset = (page - 1) * limit
+    total = db.query(Stock).count()
+    stocks = db.query(Stock).order_by(Stock.symbol).offset(offset).limit(limit).all()
+
+    items = []
+    for s in stocks:
+        # Latest 8 klines (today + last 7 days for sparkline and change calc)
+        klines = (
+            db.query(DailyKline)
+            .filter(DailyKline.stock_id == s.id)
+            .order_by(desc(DailyKline.date))
+            .limit(8)
+            .all()
+        )
+
+        if not klines:
+            items.append({
+                "symbol": s.symbol.upper(),
+                "name": s.name,
+                "price": None,
+                "change_1h": None,
+                "change_24h": None,
+                "change_7d": None,
+                "market_cap": None,
+                "volume_24h": None,
+                "sparkline_7d": [],
+            })
+            continue
+
+        latest = klines[0]
+        prev_24h = klines[1] if len(klines) > 1 else None
+        prev_7d = klines[-1] if len(klines) >= 8 else None
+
+        # Price performance
+        change_24h = None
+        if latest.close and prev_24h and prev_24h.close:
+            change_24h = ((latest.close - prev_24h.close) / prev_24h.close) * 100
+
+        change_7d = None
+        if latest.close and prev_7d and prev_7d.close:
+            change_7d = ((latest.close - prev_7d.close) / prev_7d.close) * 100
+
+        # Latest market cap from ratios
+        ratio = (
+            db.query(StockRatio)
+            .filter(StockRatio.stock_id == s.id)
+            .order_by(desc(StockRatio.period_ending))
+            .first()
+        )
+
+        # Sparkline (7 days, oldest first)
+        sparkline_data = [
+            {"date": str(k.date), "value": float(k.close) if k.close else None}
+            for k in reversed(klines[:7])
+        ]
+
+        items.append({
+            "symbol": s.symbol.upper(),
+            "name": s.name,
+            "price": float(latest.close) if latest.close else None,
+            "change_1h": None,  # No intraday data available
+            "change_24h": change_24h,
+            "change_7d": change_7d,
+            "market_cap": float(ratio.market_cap) if ratio and ratio.market_cap else None,
+            "volume_24h": float(latest.volume) if latest.volume else None,
+            "sparkline_7d": sparkline_data,
+        })
+
+    return {
+        "stocks": items,
+        "total": total,
+        "page": page,
+        "limit": limit
+    }

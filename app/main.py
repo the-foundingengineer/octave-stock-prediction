@@ -42,6 +42,7 @@ from app.crud import (
     get_stock_related,
     get_stock_stats,
     get_stocks,
+    get_stocks_dashboard,
     search_stocks,
 )
 from app.schemas import (
@@ -62,6 +63,7 @@ from app.schemas import (
     StockStatsResponse,
     IncomeStatementResponse,
     MetricComparisonResponse,
+    DashboardResponse,
 )
 from app.services import update_stock_info
 
@@ -93,6 +95,16 @@ def create_record(stock: StockRecordCreate, db: Session = Depends(get_db)):
 
 
 # ── Stock listing & detail ───────────────────────────────────────────────────
+
+
+@app.get("/stocks/dashboard", response_model=DashboardResponse)
+def read_stocks_dashboard(
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """Fetch dashboard metrics and sparklines for stocks."""
+    return get_stocks_dashboard(db, page, limit)
 
 
 @app.get("/stocks", response_model=List[Stock])

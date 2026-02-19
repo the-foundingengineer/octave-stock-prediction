@@ -438,6 +438,36 @@ class DividendResponse(BaseModel):
 
 
 
+# ── Dashboard / Leaderboard ───────────────────────────────────────────────
+
+
+class SparklinePoint(BaseModel):
+    """Simple date-value pair for sparkline charts."""
+    date: str
+    value: Optional[float] = None
+
+
+class DashboardStockItem(BaseModel):
+    """Metrics and sparkline for a single stock on the dashboard."""
+    symbol: str
+    name: Optional[str] = None
+    price: Optional[float] = None
+    change_1h: Optional[float] = None
+    change_24h: Optional[float] = None
+    change_7d: Optional[float] = None
+    market_cap: Optional[float] = None
+    volume_24h: Optional[float] = None
+    sparkline_7d: List[SparklinePoint]
+
+
+class DashboardResponse(BaseModel):
+    """Paginated list of dashboard items."""
+    stocks: List[DashboardStockItem]
+    total: int
+    page: int
+    limit: int
+
+
 # ── Market Cap History ───────────────────────────────────────────────────────
 
 
