@@ -53,7 +53,8 @@ class Stock(BaseModel):
     website: Optional[str] = None
     currency: Optional[str] = None
     stock_exchange: Optional[str] = None
-    last_updated: Optional[str] = None
+    ipo_date: Optional[date] = None
+    last_updated: Optional[datetime] = None
 
     class Config:
         from_attributes = True
