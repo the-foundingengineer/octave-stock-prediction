@@ -10,7 +10,7 @@ Organized by domain:
     - Stock comparison (single & bulk)
 """
 
-from datetime import date
+from datetime import date, datetime
 from pydantic import BaseModel
 from typing import List, Optional
 
@@ -526,6 +526,24 @@ class StockProfileResponse(BaseModel):
     employees: Optional[int] = None
     ceo: Optional[str] = None
     executives: List["StockExecutiveResponse"] = []
+
+    class Config:
+        from_attributes = True
+
+# ── News ────────────────────────────────────────────────────────────────────
+
+class NewsArticleResponse(BaseModel):
+    """Single news article."""
+    id: int
+    stock_id: Optional[int] = None
+    title: str
+    description: Optional[str] = None
+    url: str
+    source: Optional[str] = None
+    image_url: Optional[str] = None
+    lang: Optional[str] = None
+    event_uri: Optional[str] = None
+    published_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

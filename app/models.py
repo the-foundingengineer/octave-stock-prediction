@@ -71,6 +71,8 @@ class Stock(Base):
     employee_history   = relationship("EmployeeHistory",  back_populates="stock", cascade="all, delete-orphan")
     analyst_ratings    = relationship("AnalystRating",    back_populates="stock", cascade="all, delete-orphan")
     analyst_forecast   = relationship("AnalystForecast",  back_populates="stock", uselist=False, cascade="all, delete-orphan")
+    news_articles      = relationship("NewsArticle",     back_populates="stock", cascade="all, delete-orphan")
+    alerts             = relationship("Alert",           back_populates="stock", cascade="all, delete-orphan")
 
 
 
@@ -428,6 +430,46 @@ class MarketCapHistory(Base):
     stock = relationship("Stock", back_populates="market_cap_history")
 
 
+# ── Market Indices ──────────────────────────────────────────────────────────
+
+
+class MarketIndex(Base):
+    """
+    Historical data for market indices (e.g., NGX All-Share Index).
+    """
+    __tablename__ = "market_indices"
+    __table_args__ = (UniqueConstraint("symbol", "date", name="uq_index_symbol_date"),)
+
+    id         = Column(Integer, primary_key=True, index=True)
+    symbol     = Column(String(50), nullable=False, index=True)  # e.g., "NGSEINDEX"
+    name       = Column(String(100), nullable=True)
+    date       = Column(Date, nullable=False, index=True)
+    price      = Column(Numeric(24, 4), nullable=True)
+    open       = Column(Numeric(24, 4), nullable=True)
+    high       = Column(Numeric(24, 4), nullable=True)
+    low        = Column(Numeric(24, 4), nullable=True)
+    volume     = Column(BigInteger, nullable=True)
+    change_pct = Column(Numeric(10, 4), nullable=True)
+
+
+# ── Macro Rates ──────────────────────────────────────────────────────────────
+
+
+class MacroRate(Base):
+    """
+    Economic/Macro rates (e.g., Treasury Bill yields, Inflation).
+    """
+    __tablename__ = "macro_rates"
+    __table_args__ = (UniqueConstraint("symbol", "date", name="uq_macro_symbol_date"),)
+
+    id         = Column(Integer, primary_key=True, index=True)
+    symbol     = Column(String(50), nullable=False, index=True)  # e.g., "NGN_3M_TBILL"
+    name       = Column(String(100), nullable=True)
+    date       = Column(Date, nullable=False, index=True)
+    value      = Column(Numeric(10, 4), nullable=True)  # e.g., yield percentage
+    unit       = Column(String(20), nullable=True, default="percentage")
+
+
 # ── Stock Metrics (synthesized or scraped) ───────────────────────────────────
 
 
@@ -553,5 +595,95 @@ class AnalystRating(Base):
     target_to    = Column(Numeric(18, 4), nullable=True)
 
     stock = relationship("Stock", back_populates="analyst_ratings")
+
+
+# ── News & Market Content ────────────────────────────────────────────────────
+
+
+class NewsArticle(Base):
+    __tablename__ = "news_articles"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    stock_id = Column(
+        Integer,
+        ForeignKey("stocks.id"),
+        nullable=True,
+        index=True
+    )
+
+    title       = Column(String(500), nullable=False)
+    content     = Column(Text, nullable=True)           # API: body
+    url         = Column(String, unique=True, index=True)
+    source      = Column(String, nullable=True)         # API: source.title
+    image_url   = Column(String, nullable=True)         # API: image
+    lang        = Column(String(10), nullable=True)     # API: lang
+    event_uri   = Column(String, nullable=True)         # API: eventUri
+    news_type   = Column(String(50), nullable=True)     # API: dataType (e.g. "news", "pr")
+    sentiment   = Column(Float, nullable=True)          # API: sentiment
+    wgt         = Column(Integer, nullable=True)        # API: wgt (weight/relevance)
+
+    published_at = Column(
+        DateTime,
+        index=True,
+        default=datetime.now
+    )
+
+
+    stock      = relationship("Stock", back_populates="news_articles")
+    activities = relationship("UserActivity", back_populates="article", cascade="all, delete-orphan")
+
+
+# ── User & Alerts ─────────────────────────────────────────────────────────────
+
+
+class User(Base):
+    """
+    User for personalization and alerts.
+    """
+    __tablename__ = "users"
+
+    id              = Column(Integer, primary_key=True, index=True)
+    email           = Column(String(100), unique=True, index=True, nullable=False)
+    hashed_password = Column(String(200), nullable=False)
+    full_name       = Column(String(100), nullable=True)
+    created_at      = Column(DateTime, default=datetime.utcnow)
+
+    alerts     = relationship("Alert",        back_populates="user", cascade="all, delete-orphan")
+    activities = relationship("UserActivity", back_populates="user", cascade="all, delete-orphan")
+
+
+class Alert(Base):
+    """
+    User-subscribed keyword or stock price triggers.
+    """
+    __tablename__ = "alerts"
+
+    id               = Column(Integer, primary_key=True, index=True)
+    user_id          = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    stock_id         = Column(Integer, ForeignKey("stocks.id"), nullable=True, index=True)
+    keyword          = Column(String(100), nullable=True)
+    created_at       = Column(DateTime, default=datetime.utcnow)
+    last_triggered_at = Column(DateTime, nullable=True)
+
+    user  = relationship("User",  back_populates="alerts")
+    stock = relationship("Stock", back_populates="alerts")
+
+
+class UserActivity(Base):
+    """
+    Log of user interactions with news articles for personalization.
+    """
+    __tablename__ = "user_activities"
+
+    id            = Column(Integer, primary_key=True, index=True)
+    user_id       = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    article_id    = Column(Integer, ForeignKey("news_articles.id"), nullable=False, index=True)
+    activity_type = Column(String(50), nullable=False)  # e.g. "click", "share"
+    timestamp     = Column(DateTime, default=datetime.utcnow)
+
+    user    = relationship("User",        back_populates="activities")
+    article = relationship("NewsArticle", back_populates="activities")
+
 
 

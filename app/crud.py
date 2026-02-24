@@ -25,8 +25,9 @@ from sqlalchemy.orm import Session
 from app.models import (
     BalanceSheet, CashFlow, DailyKline,
     Dividend, IncomeStatement, MarketCapHistory, Stock, StockRatio, StockExecutive,
+    User, NewsArticle, Alert, UserActivity, MarketIndex, MacroRate,
 )
-from app.schemas import StockRecordCreate
+from app import schemas, models
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -991,3 +992,327 @@ def get_stocks_dashboard(db: Session, page: int = 1, limit: int = 20) -> Dict:
         "page": page,
         "limit": limit
     }
+
+
+# ── Fear & Greed Index ──────────────────────────────────────────────────────
+
+
+def _normalize(value: Optional[float], min_val: float, max_val: float, invert: bool = False) -> Optional[float]:
+    """Normalize a value to a 0-100 scale using historical min/max."""
+    if value is None or max_val == min_val:
+        return None
+    score = 100 * (value - min_val) / (max_val - min_val)
+    score = max(0.0, min(100.0, score))  # clamp
+    return 100.0 - score if invert else score
+
+
+def get_fear_greed_index(db: Session) -> Dict:
+    """
+    Compute the Nigerian Fear & Greed Index (0-100) from 5 indicators:
+    1. Market Momentum  : ASI vs 125-day moving average
+    2. Market Breadth   : Advancers vs Decliners (from daily_klines)
+    3. Volume Strength  : Volume in advancing stocks / total volume
+    4. Volatility       : 30-day StdDev of ASI daily returns (inverted)
+    5. Safe Haven Demand: Latest T-Bill yield vs 30-day ASI return (inverted)
+    """
+    import statistics
+    from datetime import date
+
+    indicators: Dict[str, Optional[float]] = {}
+    scores: Dict[str, Optional[float]] = {}
+
+    # ── 1. Market Momentum (ASI vs 125d MA) ──────────────────────────────────
+    asi_rows = (
+        db.query(MarketIndex)
+        .filter(MarketIndex.symbol == "NGSEINDEX")
+        .order_by(desc(MarketIndex.date))
+        .limit(200)
+        .all()
+    )
+
+    if len(asi_rows) >= 2:
+        latest_asi = float(asi_rows[0].price) if asi_rows[0].price else None
+        prices_125 = [float(r.price) for r in asi_rows[:125] if r.price]
+        ma_125 = statistics.mean(prices_125) if len(prices_125) >= 50 else None
+
+        if latest_asi and ma_125:
+            momentum = (latest_asi - ma_125) / ma_125 * 100
+            indicators["momentum"] = momentum
+            scores["momentum"] = _normalize(momentum, -20.0, 20.0)
+        else:
+            indicators["momentum"] = None
+            scores["momentum"] = None
+    else:
+        indicators["momentum"] = None
+        scores["momentum"] = None
+
+    # ── 2. Market Breadth & 3. Volume Strength ────────────────────────────────
+    # Get the two most recent distinct dates from daily_klines
+    recent_dates = (
+        db.query(DailyKline.date)
+        .distinct()
+        .order_by(desc(DailyKline.date))
+        .limit(2)
+        .all()
+    )
+
+    if len(recent_dates) >= 2:
+        today_date = recent_dates[0][0]
+        prev_date = recent_dates[1][0]
+
+        today_klines = (
+            db.query(DailyKline)
+            .filter(DailyKline.date == today_date)
+            .all()
+        )
+        prev_klines = (
+            db.query(DailyKline)
+            .filter(DailyKline.date == prev_date)
+            .all()
+        )
+
+        # Build a map of {stock_id: prev_close}
+        prev_map = {k.stock_id: k.close for k in prev_klines if k.close}
+
+        advancers_vol = 0.0
+        decliners_vol = 0.0
+        total_stocks = 0
+        advancing_count = 0
+
+        for k in today_klines:
+            prev_close = prev_map.get(k.stock_id)
+            if not prev_close or not k.close:
+                continue
+            total_stocks += 1
+            vol = float(k.volume or 0)
+            if k.close > prev_close:
+                advancing_count += 1
+                advancers_vol += vol
+            else:
+                decliners_vol += vol
+
+        if total_stocks > 0:
+            breadth_ratio = advancing_count / total_stocks
+            indicators["breadth"] = breadth_ratio
+            scores["breadth"] = _normalize(breadth_ratio, 0.0, 1.0)
+        else:
+            indicators["breadth"] = None
+            scores["breadth"] = None
+
+        total_vol = advancers_vol + decliners_vol
+        if total_vol > 0:
+            vol_ratio = advancers_vol / total_vol
+            indicators["volume_strength"] = vol_ratio
+            scores["volume_strength"] = _normalize(vol_ratio, 0.0, 1.0)
+        else:
+            indicators["volume_strength"] = None
+            scores["volume_strength"] = None
+    else:
+        indicators["breadth"] = None
+        scores["breadth"] = None
+        indicators["volume_strength"] = None
+        scores["volume_strength"] = None
+
+    # ── 4. Volatility (20d StdDev of ASI Returns, inverted) ──────────────────
+    if len(asi_rows) >= 21:
+        recent_prices = [float(r.price) for r in asi_rows[:21] if r.price]
+        if len(recent_prices) >= 10:
+            daily_returns = [
+                (recent_prices[i] - recent_prices[i + 1]) / recent_prices[i + 1]
+                for i in range(len(recent_prices) - 1)
+            ]
+            if len(daily_returns) >= 2:
+                volatility = statistics.stdev(daily_returns) * 100
+                indicators["volatility"] = volatility
+                scores["volatility"] = _normalize(volatility, 0.0, 5.0, invert=True)
+            else:
+                indicators["volatility"] = None
+                scores["volatility"] = None
+        else:
+            indicators["volatility"] = None
+            scores["volatility"] = None
+    else:
+        indicators["volatility"] = None
+        scores["volatility"] = None
+
+    # ── 5. Safe Haven Demand (Bond yield vs 20d ASI return, inverted) ────────
+    latest_bond = (
+        db.query(MacroRate)
+        .filter(MacroRate.symbol.in_(["NGN_3M_TBILL", "NGN_10Y_BOND"]))
+        .order_by(desc(MacroRate.date))
+        .first()
+    )
+
+    if latest_bond and len(asi_rows) >= 20:
+        bond_yield = float(latest_bond.value) if latest_bond.value else None
+        prices_20 = [float(r.price) for r in asi_rows[:21] if r.price]
+        if len(prices_20) >= 2:
+            asi_20d_return = (prices_20[0] - prices_20[-1]) / prices_20[-1] * 100
+            if bond_yield is not None:
+                # High yield vs low stock return = Fear
+                # For 10Y, we might need different normalization, but 0-100 scale handles it.
+                safe_haven_score = asi_20d_return - bond_yield / 12
+                indicators["safe_haven"] = safe_haven_score
+                scores["safe_haven"] = _normalize(safe_haven_score, -30.0, 30.0)
+            else:
+                indicators["safe_haven"] = None
+                scores["safe_haven"] = None
+        else:
+            indicators["safe_haven"] = None
+            scores["safe_haven"] = None
+    else:
+        indicators["safe_haven"] = None
+        scores["safe_haven"] = None
+
+    # ── Aggregate ─────────────────────────────────────────────────────────────
+    valid_scores = [v for v in scores.values() if v is not None]
+    final_score = statistics.mean(valid_scores) if valid_scores else None
+
+    def classify(score: Optional[float]) -> str:
+        if score is None:
+            return "Insufficient Data"
+        if score <= 20:
+            return "Extreme Fear"
+        if score <= 40:
+            return "Fear"
+        if score <= 60:
+            return "Neutral"
+        if score <= 80:
+            return "Greed"
+        return "Extreme Greed"
+
+    return {
+        "score": round(final_score, 1) if final_score is not None else None,
+        "classification": classify(final_score),
+        "as_of": str(date.today()),
+        "components": {
+            "market_momentum": {
+                "raw": round(indicators["momentum"], 4) if indicators["momentum"] is not None else None,
+                "score": round(scores["momentum"], 1) if scores["momentum"] is not None else None,
+                "label": "ASI vs 125-day MA",
+            },
+            "market_breadth": {
+                "raw": round(indicators["breadth"], 4) if indicators["breadth"] is not None else None,
+                "score": round(scores["breadth"], 1) if scores["breadth"] is not None else None,
+                "label": "Advancers / Total Stocks",
+            },
+            "volume_strength": {
+                "raw": round(indicators["volume_strength"], 4) if indicators["volume_strength"] is not None else None,
+                "score": round(scores["volume_strength"], 1) if scores["volume_strength"] is not None else None,
+                "label": "Advancer Volume / Total Volume",
+            },
+            "volatility": {
+                "raw": round(indicators["volatility"], 4) if indicators["volatility"] is not None else None,
+                "score": round(scores["volatility"], 1) if scores["volatility"] is not None else None,
+                "label": "20-day ASI Return StdDev (inverted)",
+            },
+            "safe_haven_demand": {
+                "raw": round(indicators["safe_haven"], 4) if indicators["safe_haven"] is not None else None,
+                "score": round(scores["safe_haven"], 1) if scores["safe_haven"] is not None else None,
+                "label": f"ASI 20d Return vs {latest_bond.name if latest_bond else 'Risk-Free Rate'}",
+            },
+        },
+        "data_availability": {
+            "asi_rows": len(asi_rows),
+            "macro_indicator": latest_bond.symbol if latest_bond else None,
+        },
+    }
+
+
+# ── Users & Auth ──────────────────────────────────────────────────────────────
+
+
+from passlib.context import CryptContext
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def get_user_by_email(db: Session, email: str) -> Optional[Stock]: # models.User
+    # Note: Stock used as placeholder for models.User if not imported yet, but I'll use strings or ensure imports
+    return db.query(models.User).filter(models.User.email == email).first()
+
+def create_user(db: Session, user: schemas.UserCreate) -> models.User:
+    hashed_password = pwd_context.hash(user.password)
+    db_user = models.User(
+        email=user.email,
+        hashed_password=hashed_password,
+        full_name=user.full_name
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+
+# ── News ────────────────────────────────────────────────────────────────────
+
+
+def get_news_articles(db: Session, stock_id: int) -> List[NewsArticle]:
+    return db.query(NewsArticle).filter(NewsArticle.stock_id == stock_id).order_by(NewsArticle.published_at.desc()).limit(5).all()
+
+
+def get_latest_news(db:Session) -> List[NewsArticle]:
+    return db.query(NewsArticle).order_by(NewsArticle.published_at.desc()).limit(10).all()
+
+
+# ── Alerts ──────────────────────────────────────────────────────────────────
+
+
+def create_alert(db: Session, alert: schemas.AlertCreate, user_id: int) -> models.Alert:
+    db_alert = models.Alert(
+        user_id=user_id,
+        stock_id=alert.stock_id,
+        keyword=alert.keyword
+    )
+    db.add(db_alert)
+    db.commit()
+    db.refresh(db_alert)
+    return db_alert
+
+def get_user_alerts(db: Session, user_id: int) -> List[models.Alert]:
+    return db.query(models.Alert).filter(models.Alert.user_id == user_id).all()
+
+
+# ── Activity ────────────────────────────────────────────────────────────────
+
+
+def log_activity(db: Session, activity: schemas.UserActivityCreate, user_id: int) -> models.UserActivity:
+    db_activity = models.UserActivity(
+        user_id=user_id,
+        article_id=activity.article_id,
+        activity_type=activity.activity_type
+    )
+    # Simple personalization: boost article rank on click
+    article = db.query(models.NewsArticle).filter(models.NewsArticle.id == activity.article_id).first()
+    if article:
+        article.rank_score += 10.0
+        
+    db.add(db_activity)
+    db.commit()
+    db.refresh(db_activity)
+    return db_activity
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  News articles
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def get_news_articles(db: Session, stock_id: int, limit: int = 20) -> List[NewsArticle]:
+    """Return news articles for a specific stock, ordered by most recent."""
+    return (
+        db.query(NewsArticle)
+        .filter(NewsArticle.stock_id == stock_id)
+        .order_by(desc(NewsArticle.published_at))
+        .limit(limit)
+        .all()
+    )
+
+
+def get_latest_news(db: Session, limit: int = 50) -> List[NewsArticle]:
+    """Return the most recent news articles across all stocks."""
+    return (
+        db.query(NewsArticle)
+        .order_by(desc(NewsArticle.published_at))
+        .limit(limit)
+        .all()
+    )

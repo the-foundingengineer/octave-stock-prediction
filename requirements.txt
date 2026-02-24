@@ -9,3 +9,11 @@ pydantic
 python-dotenv
 selenium
 webdriver-manager
+passlib[bcrypt]
+pytz
+requests
+beautifulsoup4
+pandas
+ta
+apscheduler
+psycopg2-binary

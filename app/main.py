@@ -19,16 +19,17 @@ Endpoints:
 
 from typing import List
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
-from app import models
+from app import models, schemas
 from app.database import SessionLocal, engine, get_db
 from app.crud import (
     create_stock_record,
     format_income_statement,
     get_bulk_comparison,
+    get_fear_greed_index,
     get_market_cap_history,
     get_metric_comparison,
     get_popular_comparisons,
@@ -44,6 +45,13 @@ from app.crud import (
     get_stocks,
     get_stocks_dashboard,
     search_stocks,
+    get_user_by_email,
+    create_user,
+    create_alert,
+    get_user_alerts,
+    log_activity,
+    get_news_articles,
+    get_latest_news
 )
 from app.schemas import (
     BulkComparisonResponse,
@@ -64,8 +72,12 @@ from app.schemas import (
     IncomeStatementResponse,
     MetricComparisonResponse,
     DashboardResponse,
+    NewsArticleResponse,
 )
 from app.services import update_stock_info
+from app.websocket_manager import manager
+from app.forecast_service import get_technical_analysis, get_analyst_consensus
+from app.tasks import start_scheduler
 
 # ── App setup ────────────────────────────────────────────────────────────────
 
@@ -83,6 +95,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.on_event("startup")
+async def startup_event():
+    start_scheduler()
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally: 
+        db.close()
+
 
 
 # ── Stock records ────────────────────────────────────────────────────────────
@@ -205,6 +229,25 @@ def get_info(stock_id: int, db: Session = Depends(get_db)):
     return result
 
 
+@app.get("/stocks/{stock_id}/forecast")
+def get_forecast(stock_id: int, db: Session = Depends(get_db)):
+    """Return programmatic technical analysis and analyst consensus for a stock."""
+    # Ensure stock exists
+    db_stock = get_stock(db, stock_id=stock_id)
+    if db_stock is None:
+        raise HTTPException(status_code=404, detail="Stock not found")
+        
+    technical_analysis = get_technical_analysis(db, stock_id)
+    analyst_consensus = get_analyst_consensus(db, stock_id)
+    
+    return {
+        "stock_id": stock_id,
+        "symbol": db_stock.symbol,
+        "technical_analysis": technical_analysis,
+        "analyst_forecast": analyst_consensus
+    }
+
+
 # ── Related stocks ───────────────────────────────────────────────────────────
 
 
@@ -320,3 +363,83 @@ def refresh_stock(symbol: str, token: str, db: Session = Depends(get_db)):
         return stock
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+
+# ── Market Sentiment ────────────────────────────────────────────────────────
+
+
+@app.get("/market/fear-greed")
+def read_fear_greed_index(db: Session = Depends(get_db)):
+    """
+    Return the Nigerian Fear & Greed Index (0-100) and its component scores.
+    0 = Extreme Fear, 100 = Extreme Greed.
+    Components: Market Momentum, Breadth, Volume Strength, Volatility, Safe Haven Demand.
+    """
+    return get_fear_greed_index(db)
+
+
+# ── WebSockets ──────────────────────────────────────────────────────────────
+
+
+# @app.websocket("/ws/ticker")
+# async def websocket_ticker(websocket: WebSocket):
+#     """
+#     WebSocket endpoint for real-time ticker updates and AI alerts.
+#     """
+#     await manager.connect(websocket)
+#     try:
+#         while True:
+#             # Keep the connection alive and listen for any client messages (if needed)
+#             data = await websocket.receive_text()
+#             # For now, we only push from server -> client, but we can handle client messages here
+#     except WebSocketDisconnect:
+#         manager.disconnect(websocket)
+#     except Exception:
+#         manager.disconnect(websocket)
+
+
+# ── News ────────────────────────────────────────────────────────────────────
+
+
+@app.get("/stocks/{stock_id}/news", response_model=List[NewsArticleResponse])
+def read_news(stock_id: int, db: Session = Depends(get_db)):
+    """Fetch market news."""
+    return get_news_articles(db, stock_id)
+
+@app.get("/news/latest", response_model=List[NewsArticleResponse])
+def latest_news(db: Session = Depends(get_db)):
+    return get_latest_news(db)
+
+
+# ── User & Alerts ────────────────────────────────────────────────────────────
+
+
+# @app.post("/users", response_model=schemas.User)
+# def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
+#     """Register a new user."""
+#     db_user = get_user_by_email(db, email=user.email)
+#     if db_user:
+#         raise HTTPException(status_code=400, detail="Email already registered")
+#     return create_user(db=db, user=user)
+
+
+# @app.post("/alerts", response_model=schemas.Alert)
+# def subscribe_alert(alert: schemas.AlertCreate, user_id: int, db: Session = Depends(get_db)):
+#     """Subscribe to news/stock alerts."""
+#     return create_alert(db=db, alert=alert, user_id=user_id)
+
+
+# @app.get("/alerts", response_model=List[schemas.Alert])
+# def read_alerts(user_id: int, db: Session = Depends(get_db)):
+#     """Fetch user's alert subscriptions."""
+#     return get_user_alerts(db, user_id=user_id)
+
+
+# ── Activity Logging ─────────────────────────────────────────────────────────
+
+
+# @app.post("/activity", response_model=schemas.UserActivity)
+# def log_user_click(activity: schemas.UserActivityCreate, user_id: int, db: Session = Depends(get_db)):
+#     """Log news article clicks for personalization."""
+#     return log_activity(db=db, activity=activity, user_id=user_id)
