@@ -24,6 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from app import models, schemas
+from app.ai.service import handle_prediction
 from app.database import SessionLocal, engine, get_db
 from app.crud import (
     create_stock_record,
@@ -366,6 +367,7 @@ def refresh_stock(symbol: str, token: str, db: Session = Depends(get_db)):
 
 
 
+
 # ── Market Sentiment ────────────────────────────────────────────────────────
 
 
@@ -443,3 +445,17 @@ def latest_news(db: Session = Depends(get_db)):
 # def log_user_click(activity: schemas.UserActivityCreate, user_id: int, db: Session = Depends(get_db)):
 #     """Log news article clicks for personalization."""
 #     return log_activity(db=db, activity=activity, user_id=user_id)
+
+# ── AI Chat ─────────────────────────────────────────────────────────────────
+
+
+@app.post("/stocks/{stock_id}/ai/chat")
+def chat(question: str, stock_id: int, db: Session = Depends(get_db)):
+    """
+    Accepts user question and stock ID, returns structured AI + numeric response.
+    """
+    try:
+        response = handle_prediction(question, stock_id, db)
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
