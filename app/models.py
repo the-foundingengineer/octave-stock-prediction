@@ -613,7 +613,7 @@ class NewsArticle(Base):
     )
 
     title       = Column(String(500), nullable=False)
-    content     = Column(Text, nullable=True)           # API: body
+    description = Column(Text, nullable=True)           # API: body
     url         = Column(String, unique=True, index=True)
     source      = Column(String, nullable=True)         # API: source.title
     image_url   = Column(String, nullable=True)         # API: image
