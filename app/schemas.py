@@ -52,7 +52,7 @@ class Stock(BaseModel):
     description: Optional[str] = None
     website: Optional[str] = None
     currency: Optional[str] = None
-    exchange: Optional[str] = None
+    stock_exchange: Optional[str] = None
     last_updated: Optional[str] = None
 
     class Config:
@@ -195,7 +195,7 @@ class StockWithIncomeStatementResponse(BaseModel):
     name: Optional[str] = None
     sector: Optional[str] = None
     industry: Optional[str] = None
-    exchange: Optional[str] = None
+    stock_exchange: Optional[str] = None
     currency: Optional[str] = None
     country: Optional[str] = None
     website: Optional[str] = None
@@ -256,7 +256,7 @@ class StockComparisonItem(BaseModel):
     name: Optional[str] = None
     sector: Optional[str] = None
     industry: Optional[str] = None
-    exchange: Optional[str] = None
+    stock_exchange: Optional[str] = None
     website: Optional[str] = None
     country: Optional[str] = None
     employees: Optional[int] = None
@@ -388,6 +388,35 @@ class BulkComparisonResponse(BaseModel):
         from_attributes = True
 
 
+# ── Metric Comparison (Time Series) ──────────────────────────────────────────
+
+
+class MetricDataPoint(BaseModel):
+    """Single data point for a metric over time."""
+    date: str
+    value: Optional[float] = None
+
+
+class StockMetricComparison(BaseModel):
+    """Historical data for a specific metric for one stock."""
+    stock_id: int
+    symbol: str
+    metric: str
+    data: List[MetricDataPoint]
+
+    class Config:
+        from_attributes = True
+
+
+class MetricComparisonResponse(BaseModel):
+    """Response wrapper for multi-stock metric comparison."""
+    metric: str
+    comparisons: List[StockMetricComparison]
+
+    class Config:
+        from_attributes = True
+
+
 # ── Dividends ────────────────────────────────────────────────────────────────
 
 
@@ -407,6 +436,37 @@ class DividendResponse(BaseModel):
 
 
 
+
+
+# ── Dashboard / Leaderboard ───────────────────────────────────────────────
+
+
+class SparklinePoint(BaseModel):
+    """Simple date-value pair for sparkline charts."""
+    date: str
+    value: Optional[float] = None
+
+
+class DashboardStockItem(BaseModel):
+    """Metrics and sparkline for a single stock on the dashboard."""
+    id: int
+    symbol: str
+    name: Optional[str] = None
+    price: Optional[float] = None
+    change_1h: Optional[float] = None
+    change_24h: Optional[float] = None
+    change_7d: Optional[float] = None
+    market_cap: Optional[float] = None
+    volume_24h: Optional[float] = None
+    sparkline_7d: List[SparklinePoint]
+
+
+class DashboardResponse(BaseModel):
+    """Paginated list of dashboard items."""
+    stocks: List[DashboardStockItem]
+    total: int
+    page: int
+    limit: int
 
 
 # ── Market Cap History ───────────────────────────────────────────────────────

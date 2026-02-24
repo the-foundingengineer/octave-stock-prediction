@@ -31,6 +31,7 @@ from app.crud import (
     format_income_statement,
     get_bulk_comparison,
     get_market_cap_history,
+    get_metric_comparison,
     get_popular_comparisons,
     get_stock,
     get_stock_by_income_statement,
@@ -42,6 +43,7 @@ from app.crud import (
     get_stock_related,
     get_stock_stats,
     get_stocks,
+    get_stocks_dashboard,
     search_stocks,
 )
 from app.schemas import (
@@ -61,6 +63,8 @@ from app.schemas import (
     StockSearchResult,
     StockStatsResponse,
     IncomeStatementResponse,
+    MetricComparisonResponse,
+    DashboardResponse,
 )
 from app.services import update_stock_info
 
@@ -92,6 +96,16 @@ def create_record(stock: StockRecordCreate, db: Session = Depends(get_db)):
 
 
 # ── Stock listing & detail ───────────────────────────────────────────────────
+
+
+@app.get("/stocks/dashboard", response_model=DashboardResponse)
+def read_stocks_dashboard(
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """Fetch dashboard metrics and sparklines for stocks."""
+    return get_stocks_dashboard(db, page, limit)
 
 
 @app.get("/stocks", response_model=List[Stock])
@@ -127,6 +141,22 @@ def bulk_compare(
         raise HTTPException(status_code=400, detail="No symbols provided")
     comparisons = get_bulk_comparison(db, symbol_list, interval, limit)
     return {"comparisons": comparisons}
+
+
+@app.get("/stocks/compare-metrics", response_model=MetricComparisonResponse)
+def compare_metrics(
+    symbols: str = Query(..., description="Comma-separated stock symbols"),
+    metric: str = Query(..., description="Metric to compare (e.g., revenue, market_cap)"),
+    limit: int = Query(20, ge=1, le=100, description="Max data points per stock"),
+    db: Session = Depends(get_db),
+):
+    """Compare a specific metric over time for multiple stocks."""
+    symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
+    if not symbol_list:
+        raise HTTPException(status_code=400, detail="No symbols provided")
+
+    comparisons = get_metric_comparison(db, symbol_list, metric, limit)
+    return {"metric": metric, "comparisons": comparisons}
 
 
 @app.get("/stocks/{stock_id}", response_model=Stock)

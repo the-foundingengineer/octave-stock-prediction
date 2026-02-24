@@ -377,15 +377,15 @@ def get_stock_info(db: Session, stock_id: int) -> Optional[Dict]:
     return {
         "stock_id": stock_id,
         "symbol": stock.symbol.upper(),
-        "ipo_date": getattr(stock, "founded", None),
+        "ipo_date": str(stock.ipo_date) if stock.ipo_date else None,
         "name": stock.name,
         "fifty_two_week_high": _safe_float(latest.week_52_high) if latest else None,
         "fifty_two_week_low": _safe_float(latest.week_52_low) if latest else None,
         "fifty_day_moving_average": _safe_float(latest.ma_50d) if latest else None,
         "sector": stock.sector,
         "industry": stock.industry,
-        "sentiment": getattr(stock, "sentiment", None),
-        "sp_score": getattr(stock, "sp_score", None),
+        "sentiment": stock.sentiment,
+        "sp_score": stock.sp_score,
     }
 
 
@@ -618,12 +618,12 @@ def _build_comparison_data(db: Session, stock: Stock) -> Dict:
         "name": stock.name,
         "sector": stock.sector,
         "industry": stock.industry,
-        "exchange": stock.exchange,
+        "stock_exchange": stock.stock_exchange,
         "website": stock.website,
         "country": stock.country,
         "employees": stock.employees,
         "founded": stock.founded,
-        "ipo_date": None,
+        "ipo_date": stock.ipo_date,
 
         # Price
         "stock_price": _optional_float(latest.close) if latest else None,
@@ -823,4 +823,171 @@ def get_market_cap_history(
             }
             for r in rows
         ],
+    }
+
+
+def get_metric_comparison(
+    db: Session,
+    symbols: List[str],
+    metric: str,
+    limit: int = 20,
+) -> List[Dict]:
+    """
+    Fetch historical data for a specific metric across multiple stocks.
+    Supported metrics: revenue, market_cap, net_income, eps, free_cash_flow,
+    pe_ratio, pb_ratio, ps_ratio.
+    """
+    results = []
+    metric = metric.lower()
+
+    for sym in symbols:
+        stock = db.query(Stock).filter(Stock.symbol.ilike(sym.strip())).first()
+        if not stock:
+            continue
+
+        data_points = []
+
+        if metric == "market_cap":
+            # Primary source: MarketCapHistory
+            rows = (
+                db.query(MarketCapHistory)
+                .filter(MarketCapHistory.stock_id == stock.id)
+                .order_by(desc(MarketCapHistory.date))
+                .limit(limit)
+                .all()
+            )
+            data_points = [
+                {"date": str(r.date), "value": float(r.market_cap) if r.market_cap else None}
+                for r in rows
+            ]
+        elif metric in ["revenue", "net_income", "eps", "free_cash_flow"]:
+            # Primary source: IncomeStatement (period_type='FY' or 'TTM')
+            field_map = {
+                "revenue": IncomeStatement.revenue,
+                "net_income": IncomeStatement.net_income,
+                "eps": IncomeStatement.eps_basic,
+                "free_cash_flow": IncomeStatement.free_cash_flow,
+            }
+            rows = (
+                db.query(IncomeStatement.period_ending, field_map[metric])
+                .filter(IncomeStatement.stock_id == stock.id)
+                .order_by(desc(IncomeStatement.period_ending))
+                .limit(limit)
+                .all()
+            )
+            data_points = [
+                {"date": str(r[0]), "value": float(r[1]) if r[1] else None}
+                for r in rows
+            ]
+        elif metric in ["pe_ratio", "pb_ratio", "ps_ratio"]:
+            # Primary source: StockRatio
+            field_map = {
+                "pe_ratio": StockRatio.pe_ratio,
+                "pb_ratio": StockRatio.pb_ratio,
+                "ps_ratio": StockRatio.ps_ratio,
+            }
+            rows = (
+                db.query(StockRatio.period_ending, field_map[metric])
+                .filter(StockRatio.stock_id == stock.id)
+                .order_by(desc(StockRatio.period_ending))
+                .limit(limit)
+                .all()
+            )
+            data_points = [
+                {"date": str(r[0]), "value": float(r[1]) if r[1] else None}
+                for r in rows
+            ]
+
+        # Ensure data is chronological (oldest first for charts)
+        data_points.reverse()
+
+        results.append({
+            "stock_id": stock.id,
+            "symbol": stock.symbol.upper(),
+            "metric": metric,
+            "data": data_points,
+        })
+
+    return results
+
+
+def get_stocks_dashboard(db: Session, page: int = 1, limit: int = 20) -> Dict:
+    """
+    Fetch a list of stocks with their latest metrics, price performance,
+    and a 7-day sparkline.
+    """
+    offset = (page - 1) * limit
+    total = db.query(Stock).count()
+    stocks = db.query(Stock).order_by(Stock.symbol).offset(offset).limit(limit).all()
+
+    items = []
+    for s in stocks:
+        # Latest 8 klines (today + last 7 days for sparkline and change calc)
+        klines = (
+            db.query(DailyKline)
+            .filter(DailyKline.stock_id == s.id)
+            .order_by(desc(DailyKline.date))
+            .limit(8)
+            .all()
+        )
+
+        if not klines:
+            items.append({
+                "symbol": s.symbol.upper(),
+                "name": s.name,
+                "price": None,
+                "change_1h": None,
+                "change_24h": None,
+                "change_7d": None,
+                "market_cap": None,
+                "volume_24h": None,
+                "sparkline_7d": [],
+            })
+            continue
+
+        latest = klines[0]
+        prev_24h = klines[1] if len(klines) > 1 else None
+        prev_7d = klines[-1] if len(klines) >= 8 else None
+
+        # Price performance
+        change_24h = None
+        if latest.close and prev_24h and prev_24h.close:
+            change_24h = ((latest.close - prev_24h.close) / prev_24h.close) * 100
+
+        change_7d = None
+        if latest.close and prev_7d and prev_7d.close:
+            change_7d = ((latest.close - prev_7d.close) / prev_7d.close) * 100
+
+        # Latest market cap from ratios
+        ratio = (
+            db.query(StockRatio)
+            .filter(StockRatio.stock_id == s.id)
+            .order_by(desc(StockRatio.period_ending))
+            .first()
+        )
+
+        # Sparkline (7 days, oldest first)
+        sparkline_data = [
+            {"date": str(k.date), "value": float(k.close) if k.close else None}
+            for k in reversed(klines[:7])
+        ]
+
+        items.append({
+            "id": s.id,
+            "symbol": s.symbol.upper(),
+            "name": s.name,
+            "price": float(latest.close) if latest.close else None,
+            "change_1h": None,  # No intraday data available
+            "change_24h": change_24h,
+            "change_7d": change_7d,
+            "market_cap": float(ratio.market_cap) if ratio and ratio.market_cap else None,
+            "volume_24h": float(latest.volume) if latest.volume else None,
+            "sparkline_7d": sparkline_data,
+        })
+
+    return {
+        "stocks": items,
+        "total": total,
+        "page": page,
+        "limit": limit
     }
