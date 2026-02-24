@@ -5,9 +5,9 @@ from google.genai import types
 
 import os
 
-GEMINI_API_KEY = 'AIzaSyDFCx8XOLxmN3zVZfBwQeoizGQf-9QdK58'
+# GEMINI_API_KEY = 'AIzaSyDFCx8XOLxmN3zVZfBwQeoizGQf-9QdK58'
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 def call_gemini(prompt: str) -> str:
     """
