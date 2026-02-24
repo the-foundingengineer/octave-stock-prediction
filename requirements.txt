@@ -2,6 +2,7 @@ fastapi
 fastapi[standard]
 uvicorn
 openai
+google-genai
 google-generativeai
 sqlalchemy
 psycopg2-binary
