@@ -1,7 +1,11 @@
+import os
 import httpx
+from dotenv import load_dotenv
 from app.models import NewsArticle
-from app.config import NEWS_API_KEY
 from datetime import datetime
+
+load_dotenv()
+NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 
 BASE_URL = "https://eventregistry.org/api/v1/article/getArticles"
 

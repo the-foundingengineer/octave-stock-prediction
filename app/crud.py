@@ -1310,3 +1310,126 @@ def get_latest_news(db: Session, limit: int = 50) -> List[NewsArticle]:
     """Return the most recent news articles across all stocks."""
     return db.query(NewsArticle).order_by(desc(NewsArticle.published_at)).limit(limit).all()
 
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Market Indices
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def get_market_indices(db: Session):
+    """
+    Calculate SP10 and SP30 indices dynamically based on the top stocks by market cap.
+    Returns: {
+        "sp10": { "current_price", "change_24h", "low_52w", "chart_data": [{"date", "price"}] },
+        "sp30": { ... }
+    }
+    """
+    from datetime import datetime, timedelta
+    from sqlalchemy import desc
+    from app.models import StockMetric, DailyKline
+    
+    # 1. Get top 30 stocks by market cap
+    # We use StockMetric to find the latest available market_cap per stock.
+    # Postgres specific distinct ON is tricky across dialects, so we fetch all 
+    # and filter in memory, or assume the most recent metric per stock is high.
+    # For simplicity, let's grab the absolute highest market_cap rows in the last year
+    # and uniquely identify up to 30 stocks.
+    one_year_ago = datetime.utcnow() - timedelta(days=365)
+    
+    metrics = (
+        db.query(StockMetric.stock_id, StockMetric.market_cap)
+        .filter(StockMetric.market_cap != None)
+        .order_by(desc(StockMetric.market_cap))
+        .limit(100) # Fetch more to account for duplicates
+        .all()
+    )
+    
+    seen_stocks = set()
+    top_stocks = []
+    for m in metrics:
+        if m.stock_id not in seen_stocks:
+            seen_stocks.add(m.stock_id)
+            top_stocks.append(m.stock_id)
+            if len(top_stocks) >= 30:
+                break
+                
+    sp10_ids = top_stocks[:10]
+    sp30_ids = top_stocks[:30]
+    
+    if not sp10_ids:
+        return {"sp10": None, "sp30": None}
+        
+    # 2. Fetch 1-yr klines for these 30 stocks
+    # Ideally, we want one price per date.
+    klines = (
+        db.query(DailyKline.stock_id, DailyKline.date, DailyKline.close)
+        .filter(DailyKline.stock_id.in_(sp30_ids))
+        .filter(DailyKline.close != None)
+        # Assuming date string format 'YYYY-MM-DD' validates reasonably well for >=
+        .filter(DailyKline.date >= one_year_ago.strftime("%Y-%m-%d"))
+        .order_by(DailyKline.date)
+        .all()
+    )
+    
+    # 3. Aggregate into daily index values
+    from collections import defaultdict
+    
+    # map: date -> { stock_id: close_price }
+    date_prices = defaultdict(dict)
+    for k in klines:
+        date_prices[k.date][k.stock_id] = float(k.close)
+        
+    # Sort dates
+    sorted_dates = sorted(date_prices.keys())
+    
+    def calculate_index(target_ids, base_value=100.0):
+        chart_data = []
+        low_52w = float('inf')
+        
+        # Determine initial sum to act as our divisor reference
+        initial_sum = 0
+        if sorted_dates:
+            first_date = sorted_dates[0]
+            # Sum up whatever subset of target_ids existed on day 1
+            for sid in target_ids:
+                initial_sum += date_prices[first_date].get(sid, 0.0)
+                
+        divisor = initial_sum / base_value if initial_sum > 0 else 1.0
+        
+        for d in sorted_dates:
+            daily_sum = 0.0
+            valid_count = 0
+            for sid in target_ids:
+                price = date_prices[d].get(sid)
+                if price is not None:
+                    daily_sum += price
+                    valid_count += 1
+            
+            # Simple divisor logic (price-weighted)
+            index_val = daily_sum / divisor if divisor > 0 else 0
+            # If no data for this day, skip or carry forward
+            if valid_count > 0:
+                chart_data.append({"date": d, "price": round(index_val, 2)})
+                if index_val < low_52w:
+                    low_52w = index_val
+                    
+        # Extract stats
+        if not chart_data:
+            return None
+            
+        current_price = chart_data[-1]["price"]
+        prev_price = chart_data[-2]["price"] if len(chart_data) > 1 else current_price
+        
+        change_24h = ((current_price - prev_price) / prev_price * 100) if prev_price > 0 else 0.0
+        
+        return {
+            "current_price": current_price,
+            "change_24h": round(change_24h, 2),
+            "low_52w": round(low_52w, 2),
+            "chart_data": chart_data
+        }
+
+    return {
+        "sp10": calculate_index(sp10_ids, base_value=100.0),
+        "sp30": calculate_index(sp30_ids, base_value=100.0)
+    }

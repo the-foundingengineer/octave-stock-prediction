@@ -406,6 +406,15 @@ async def read_fear_greed_index(db: Session = Depends(get_db)):
     return await asyncio.to_thread(get_fear_greed_index, db)
 
 
+@app.get("/market/indices")
+@cache(expire=3600)
+async def read_market_indices(db: Session = Depends(get_db)):
+    """
+    Return SP10 and SP30 market indices (Top 10 and Top 30 stocks by market cap).
+    """
+    from app.crud import get_market_indices
+    return await asyncio.to_thread(get_market_indices, db)
+
 # ── WebSockets ──────────────────────────────────────────────────────────────
 
 
