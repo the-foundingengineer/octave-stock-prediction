@@ -18,3 +18,5 @@ pandas
 ta
 apscheduler
 psycopg2-binary
+redis
+fastapi-cache2[redis]

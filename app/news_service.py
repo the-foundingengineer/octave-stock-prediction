@@ -94,7 +94,7 @@ async def update_stock_news(db, stock):
         news = NewsArticle(
             stock_id=stock.id,
             title=article.get("title", ""),
-            content=article.get("body"),
+            description=article.get("body"),
             url=url,
             source=source_name,
             image_url=article.get("image"),

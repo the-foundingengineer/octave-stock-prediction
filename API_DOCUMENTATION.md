@@ -27,6 +27,7 @@
 | `GET` | `/popular_comparisons` | Top stocks per sector |
 | `POST` | `/stock_records/` | Create a daily kline record |
 | `POST` | `/stocks/{symbol}/refresh` | Refresh from iTick API |
+| `GET` | `/market/fear-greed` | Nigerian Fear & Greed Index |
 
 ---
 
@@ -811,3 +812,73 @@ interface StockProfile {
   executives: StockExecutive[];
 }
 ```
+
+---
+
+### 18. Fear & Greed Index
+
+```
+GET /market/fear-greed
+```
+
+Returns the **Nigerian Fear & Greed Index**, a multi-indicator sentiment gauge specifically tailored for the NGX (Nigerian Exchange).
+
+**Response Structure:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `score` | `float` | Final aggregated score (0–100). |
+| `classification`| `string`| "Extreme Fear", "Fear", "Neutral", "Greed", "Extreme Greed". |
+| `as_of` | `string` | Calculation date (YYYY-MM-DD). |
+| `components` | `object` | Detailed scores for the 5 underlying indicators. |
+
+**Component Indicators:**
+
+1.  **Market Momentum:** ASI price relative to its 125-day moving average.
+2.  **Market Breadth:** Ratio of advancing stocks to total stocks.
+3.  **Volume Strength:** Ratio of trading volume in advancing stocks vs total volume.
+4.  **Volatility:** 20-day standard deviation of ASI daily returns.
+5.  **Safe Haven Demand:** Risk-free rate (T-Bill) vs 20-day ASI returns.
+
+**Example Response:**
+
+```json
+{
+  "score": 62.5,
+  "classification": "Greed",
+  "as_of": "2025-02-18",
+  "components": {
+    "market_momentum": {
+      "raw": 4.25,
+      "score": 65.0,
+      "label": "ASI vs 125-day MA"
+    },
+    "market_breadth": {
+      "raw": 0.58,
+      "score": 58.0,
+      "label": "Advancers / Total Stocks"
+    },
+    "volume_strength": {
+      "raw": 0.72,
+      "score": 72.0,
+      "label": "Advancer Volume / Total Volume"
+    },
+    "volatility": {
+      "raw": 1.25,
+      "score": 80.0,
+      "label": "20-day ASI Return StdDev (inverted)"
+    },
+    "safe_haven_demand": {
+      "raw": -2.5,
+      "score": 38.0,
+      "label": "ASI 20d Return vs T-Bill"
+    }
+  },
+  "data_availability": {
+    "asi_rows": 200,
+    "macro_indicator": "T-Bill"
+  }
+}
+```
+
+> **Frontend tip:** Use a gauge chart (0-100) to visualize the main `score`. Each component's `score` (0-100) can be shown in a breakdown list or sub-gauges.

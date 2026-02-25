@@ -1250,8 +1250,6 @@ def get_news_articles(db: Session, stock_id: int) -> List[NewsArticle]:
     return db.query(NewsArticle).filter(NewsArticle.stock_id == stock_id).order_by(NewsArticle.published_at.desc()).limit(5).all()
 
 
-def get_latest_news(db:Session) -> List[NewsArticle]:
-    return db.query(NewsArticle).order_by(NewsArticle.published_at.desc()).limit(10).all()
 
 
 # ── Alerts ──────────────────────────────────────────────────────────────────
@@ -1284,8 +1282,8 @@ def log_activity(db: Session, activity: schemas.UserActivityCreate, user_id: int
     # Simple personalization: boost article rank on click
     article = db.query(models.NewsArticle).filter(models.NewsArticle.id == activity.article_id).first()
     if article:
-        article.rank_score += 10.0
-        
+        # article.rank_score += 10.0 # removed from model
+        pass
     db.add(db_activity)
     db.commit()
     db.refresh(db_activity)
@@ -1310,9 +1308,5 @@ def get_news_articles(db: Session, stock_id: int, limit: int = 20) -> List[NewsA
 
 def get_latest_news(db: Session, limit: int = 50) -> List[NewsArticle]:
     """Return the most recent news articles across all stocks."""
-    return (
-        db.query(NewsArticle)
-        .order_by(desc(NewsArticle.published_at))
-        .limit(limit)
-        .all()
-    )
+    return db.query(NewsArticle).order_by(desc(NewsArticle.published_at)).limit(limit).all()
+

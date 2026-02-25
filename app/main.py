@@ -18,12 +18,22 @@ Endpoints:
 """
 
 from typing import List
+import asyncio
 
 from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
+from fastapi_cache import FastAPICache
+from fastapi_cache.backends.redis import RedisBackend
+from fastapi_cache.backends.inmemory import InMemoryBackend
+from fastapi_cache.decorator import cache
+import redis.asyncio as redis
+
 from app import models, schemas
+from app.config import REDIS_URL
+from app.ai.service import handle_prediction
+from app.database import SessionLocal, engine, get_db
 from app.ai.service import handle_prediction
 from app.database import SessionLocal, engine, get_db
 from app.crud import (
@@ -100,6 +110,17 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     start_scheduler()
+    
+    # Initialize Cache
+    try:
+        r = redis.from_url(REDIS_URL, encoding="utf8", decode_responses=True)
+        # Check connection with a short timeout to prevent hanging
+        await asyncio.wait_for(r.ping(), timeout=2.0)
+        FastAPICache.init(RedisBackend(r), prefix="fastapi-cache")
+        print(f"Redis cache initialized with {REDIS_URL}")
+    except Exception as e:
+        print(f"Redis not available, falling back to InMemoryBackend: {e}")
+        FastAPICache.init(InMemoryBackend(), prefix="fastapi-cache")
 
 def get_db():
     db = SessionLocal()
@@ -123,13 +144,14 @@ def create_record(stock: StockRecordCreate, db: Session = Depends(get_db)):
 
 
 @app.get("/stocks/dashboard", response_model=DashboardResponse)
-def read_stocks_dashboard(
+@cache(expire=300)
+async def read_stocks_dashboard(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
     """Fetch dashboard metrics and sparklines for stocks."""
-    return get_stocks_dashboard(db, page, limit)
+    return await asyncio.to_thread(get_stocks_dashboard, db, page, limit)
 
 
 @app.get("/stocks", response_model=List[Stock])
@@ -153,7 +175,8 @@ def stock_search(
 
 
 @app.get("/stocks/compare", response_model=BulkComparisonResponse)
-def bulk_compare(
+@cache(expire=300)
+async def bulk_compare(
     symbols: str = Query(..., description="Comma-separated stock symbols"),
     interval: str = Query("week", description="Kline interval: day, week, month, year"),
     limit: int = Query(52, ge=1, le=500, description="Max klines per stock"),
@@ -163,7 +186,7 @@ def bulk_compare(
     symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
     if not symbol_list:
         raise HTTPException(status_code=400, detail="No symbols provided")
-    comparisons = get_bulk_comparison(db, symbol_list, interval, limit)
+    comparisons = await asyncio.to_thread(get_bulk_comparison, db, symbol_list, interval, limit)
     return {"comparisons": comparisons}
 
 
@@ -213,9 +236,10 @@ def get_klines(
 
 
 @app.get("/stocks/{stock_id}/stats", response_model=StockStatsResponse)
-def get_stats(stock_id: int, db: Session = Depends(get_db)):
+@cache(expire=60)
+async def get_stats(stock_id: int, db: Session = Depends(get_db)):
     """Return comprehensive statistics for a stock."""
-    result = get_stock_stats(db, stock_id)
+    result = await asyncio.to_thread(get_stock_stats, db, stock_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Stock statistics not found")
     return result
@@ -372,13 +396,14 @@ def refresh_stock(symbol: str, token: str, db: Session = Depends(get_db)):
 
 
 @app.get("/market/fear-greed")
-def read_fear_greed_index(db: Session = Depends(get_db)):
+@cache(expire=300)
+async def read_fear_greed_index(db: Session = Depends(get_db)):
     """
     Return the Nigerian Fear & Greed Index (0-100) and its component scores.
     0 = Extreme Fear, 100 = Extreme Greed.
     Components: Market Momentum, Breadth, Volume Strength, Volatility, Safe Haven Demand.
     """
-    return get_fear_greed_index(db)
+    return await asyncio.to_thread(get_fear_greed_index, db)
 
 
 # ── WebSockets ──────────────────────────────────────────────────────────────
@@ -410,8 +435,9 @@ def read_news(stock_id: int, db: Session = Depends(get_db)):
     return get_news_articles(db, stock_id)
 
 @app.get("/news/latest", response_model=List[NewsArticleResponse])
-def latest_news(db: Session = Depends(get_db)):
-    return get_latest_news(db)
+@cache(expire=120)
+async def latest_news(db: Session = Depends(get_db)):
+    return await asyncio.to_thread(get_latest_news, db)
 
 
 # ── User & Alerts ────────────────────────────────────────────────────────────
