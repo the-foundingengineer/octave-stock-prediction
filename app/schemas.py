@@ -548,3 +548,49 @@ class NewsArticleResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+# -- Market Indicators (RSI & MACD) ------------------------------------------
+
+class RSIHistoricalPoint(BaseModel):
+    label: str
+    value: float
+    status: str
+
+class RSIHeatmapPoint(BaseModel):
+    symbol: str
+    rsi_value: float
+    daily_return: float
+    market_cap: float
+    category: str
+
+class RSIStatusDistribution(BaseModel):
+    oversold: float
+    overbought: float
+
+class RSIIndicatorResponse(BaseModel):
+    average_rsi: float
+    status_distribution: RSIStatusDistribution
+    historical_data: List[RSIHistoricalPoint]
+    heatmap_data: List[RSIHeatmapPoint]
+
+class MACDHistoricalPoint(BaseModel):
+    label: str
+    value: float
+    status: str
+
+class MACDHeatmapPoint(BaseModel):
+    symbol: str
+    macd_histogram: float
+    signal_line: float
+    market_cap: float
+    momentum_category: str
+
+class MACDMomentumDistribution(BaseModel):
+    positive: float
+    negative: float
+
+class MACDIndicatorResponse(BaseModel):
+    average_macd: float
+    momentum_distribution: MACDMomentumDistribution
+    historical_data: List[MACDHistoricalPoint]
+    heatmap_data: List[MACDHeatmapPoint]
