@@ -64,6 +64,7 @@ from app.crud import (
     get_news_articles,
     get_latest_news
 )
+from app.indicators import get_market_rsi, get_market_macd
 from app.schemas import (
     BulkComparisonResponse,
     DividendResponse,
@@ -84,6 +85,8 @@ from app.schemas import (
     MetricComparisonResponse,
     DashboardResponse,
     NewsArticleResponse,
+    RSIIndicatorResponse,
+    MACDIndicatorResponse,
 )
 from app.services import update_stock_info
 from app.websocket_manager import manager
@@ -414,6 +417,29 @@ async def read_market_indices(db: Session = Depends(get_db)):
     """
     from app.crud import get_market_indices
     return await asyncio.to_thread(get_market_indices, db)
+
+
+@app.get("/market/indicators/rsi", response_model=RSIIndicatorResponse)
+@cache(expire=3600)
+async def read_market_rsi(db: Session = Depends(get_db)):
+    """
+    Return market-wide RSI indicators and distributions.
+    Provides average RSI, overbought/oversold distribution,
+    historical RSI snapshots, and heatmap data per stock.
+    """
+    return await asyncio.to_thread(get_market_rsi, db)
+
+
+@app.get("/market/indicators/macd", response_model=MACDIndicatorResponse)
+@cache(expire=3600)
+async def read_market_macd(db: Session = Depends(get_db)):
+    """
+    Return market-wide MACD indicators and momentum distribution.
+    Provides average MACD, bullish/bearish split,
+    historical MACD snapshots, and divergence chart data per stock.
+    """
+    return await asyncio.to_thread(get_market_macd, db)
+
 
 # ── WebSockets ──────────────────────────────────────────────────────────────
 
