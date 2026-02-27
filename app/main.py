@@ -24,7 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from app import models
-from app.ai.service import handle_prediction
+from app.ai.service import process_ai_question
 from app.database import SessionLocal, engine, get_db
 from app.crud import (
     create_stock_record,
@@ -65,6 +65,8 @@ from app.schemas import (
     IncomeStatementResponse,
     MetricComparisonResponse,
     DashboardResponse,
+    ChatRequest,
+    ChatResponse, 
 )
 from app.services import update_stock_info
 
@@ -323,13 +325,17 @@ def refresh_stock(symbol: str, token: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/stocks/{stock_id}/ai/chat")
-def chat(question: str, stock_id: int, db: Session = Depends(get_db)):
-    """
-    Accepts user question and stock ID, returns structured AI + numeric response.
-    """
-    try:
-        response = handle_prediction(question, stock_id, db)
-        return response
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+# @app.post("/stocks/{stock_id}/ai/chat")
+# def chat(question: str, stock_id: int, db: Session = Depends(get_db)):
+#     """
+#     Accepts user question and stock ID, returns structured AI + numeric response.
+#     """
+#     try:
+#         response = handle_prediction(question, stock_id, db)
+#         return response
+#     except Exception as e:
+#         raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/stocks/chat", response_model=ChatResponse)
+def chat(request: ChatRequest):
+    return process_ai_question(request.question)

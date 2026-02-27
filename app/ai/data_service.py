@@ -1,6 +1,6 @@
 from sqlalchemy import extract
 from sqlalchemy.orm import Session
-from app.models import IncomeStatement
+from app.models import IncomeStatement, Stock
 
 
 def get_available_years(db: Session, stock_id: int):
@@ -38,3 +38,21 @@ def get_metric_values(
         data[year] = value if value is not None else 0
 
     return data
+
+def validate_nigerian_stock_question(question: str, db: Session) -> bool:
+
+    question_lower = question.lower()
+
+    # Fetch all Nigerian stock names
+    nigerian_stocks = (
+        db.query(Stock)
+        .filter(Stock.country.ilike("nigeria"))
+        .all()
+    )
+
+    # Check if any Nigerian stock name appears in question
+    for stock in nigerian_stocks:
+        if stock.name.lower() in question_lower:
+            return True
+
+    return False

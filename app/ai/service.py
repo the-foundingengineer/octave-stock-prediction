@@ -63,116 +63,149 @@
 
 # app/ai/service.py
 
+from requests import Session
+
 from app.ai.classifier import classify_intent, IntentType
 from app.ai.metric_mapper import extract_metric
 from app.ai.year_resolver import resolve_years
-from app.ai.data_service import get_available_years, get_metric_values
+from app.ai.data_service import get_available_years, get_metric_values, validate_nigerian_stock_question
 from app.ai.calculator import calculate_growth, forecast_next
-from app.ai.gemini_service import call_gemini
+from app.ai.gemini_service import generate_ai_response
 
 
-def handle_prediction(question: str, stock_id: int, db):
+# def handle_prediction(question: str, stock_id: int, db):
 
-    # Classify intent
-    intent = classify_intent(question)
+#     # Classify intent
+#     intent = classify_intent(question)
 
-    # Extract metric
-    metric = extract_metric(question)
+#     # Extract metric
+#     metric = extract_metric(question)
 
-    if metric is None:
-        answer = call_gemini(
-            f"User asked: '{question}'. "
-            "The requested financial metric is not available in the database."
-        )
-        return {
-            "answer": answer,
-            "data_used": {},
-            "growth_rate": None,
-            "forecast": None,
-            "disclaimer": None
-        }
+#     system_prompt = """
+#         You are a financial AI assistant specialized strictly in Nigerian stocks listed on the Nigerian Exchange (NGX).
 
-    # Get available years
-    available_years = get_available_years(db, stock_id)
+#         Rules:
+#         1. Only answer questions related to Nigerian-listed companies.
+#         2. If the question is not about a Nigerian stock, respond with:
+#         "This AI assistant only provides analysis for Nigerian stocks. Please ask about a Nigerian-listed company."
+#         3. Provide clear financial analysis when relevant.
+#         4. Be professional and concise.
+#         5. If forecasting, clearly state assumptions.
+#         """
 
-    if not available_years:
-        raise ValueError("No financial data available for this stock.")
+#     if metric is None:
+#         answer = call_gemini(
+#             f"{system_prompt}. "
+#             "The requested financial metric is not available in the database."
+#         )
+#         return {
+#             "answer": answer,
+#             "data_used": {},
+#             "growth_rate": None,
+#             "forecast": None,
+#             "disclaimer": None
+#         }
 
-    # Resolve years (MVP: use latest years automatically)
-    resolved_years = resolve_years(intent, [], available_years)
+#     # Get available years
+#     available_years = get_available_years(db, stock_id)
 
-    # Ensure years are sorted oldest → newest
-    resolved_years = sorted(resolved_years)
+#     if not available_years:
+#         raise ValueError("No financial data available for this stock.")
 
-    # Fetch metric values
-    values = get_metric_values(db, stock_id, metric, resolved_years)
+#     # Resolve years (MVP: use latest years automatically)
+#     resolved_years = resolve_years(intent, [], available_years)
 
-    # Normalize year keys to int (prevents mismatch bug)
-    values = {int(k): v for k, v in values.items()}
+#     # Ensure years are sorted oldest → newest
+#     resolved_years = sorted(resolved_years)
 
-    growth = None
-    forecast = None
+#     # Fetch metric values
+#     values = get_metric_values(db, stock_id, metric, resolved_years)
 
-    # Prediction Logic (SAFE VERSION)
-    if intent == IntentType.PREDICTION:
+#     # Normalize year keys to int (prevents mismatch bug)
+#     values = {int(k): v for k, v in values.items()}
 
-        # Not enough data → let Gemini explain
-        if len(resolved_years) < 2:
-            answer = call_gemini(
-                f"User asked: '{question}'. "
-                "There is not enough historical data to generate a forecast."
-            )
-            return {
-                "answer": answer,
-                "data_used": values,
-                "growth_rate": None,
-                "forecast": None,
-                "disclaimer": None
-            }
+#     growth = None
+#     forecast = None
 
-        older_year = resolved_years[0]
-        newer_year = resolved_years[1]
+#     # Prediction Logic (SAFE VERSION)
+#     if intent == IntentType.PREDICTION:
 
-        older_value = values.get(older_year)
-        newer_value = values.get(newer_year)
+#         # Not enough data → let Gemini explain
+#         if len(resolved_years) < 2:
+#             answer = call_gemini(
+#                 f"User asked: '{question}'. "
+#                 "There is not enough historical data to generate a forecast."
+#             )
+#             return {
+#                 "answer": answer,
+#                 "data_used": values,
+#                 "growth_rate": None,
+#                 "forecast": None,
+#                 "disclaimer": None
+#             }
 
-        if older_value is None or newer_value is None:
-            raise ValueError("Missing financial data for required years.")
+#         older_year = resolved_years[0]
+#         newer_year = resolved_years[1]
 
-        # Growth with floor at zero
-        growth = calculate_growth(older_value, newer_value)
+#         older_value = values.get(older_year)
+#         newer_value = values.get(newer_year)
 
-        # Forecast next year
-        forecast = forecast_next(newer_value, growth)
+#         if older_value is None or newer_value is None:
+#             raise ValueError("Missing financial data for required years.")
 
-        ai_prompt = (
-            f"User asked: '{question}'. "
-            f"{metric} in {older_year}: {older_value}. "
-            f"{metric} in {newer_year}: {newer_value}. "
-            f"Growth rate: {growth:.2%}. "
-            f"Forecast for next year: {forecast}. "
-            "Explain the financial trend clearly and include a disclaimer."
-        )
+#         # Growth with floor at zero
+#         growth = calculate_growth(older_value, newer_value)
 
-    else:
-        # Non-prediction intents
-        ai_prompt = (
-            f"User asked: '{question}'. "
-            f"Provide explanation based strictly on this data: {values}."
-        )
+#         # Forecast next year
+#         forecast = forecast_next(newer_value, growth)
 
-    # Call Gemini
-    answer = call_gemini(ai_prompt)
+#         ai_prompt = (
+#             f"User asked: '{question}'. "
+#             f"{metric} in {older_year}: {older_value}. "
+#             f"{metric} in {newer_year}: {newer_value}. "
+#             f"Growth rate: {growth:.2%}. "
+#             f"Forecast for next year: {forecast}. "
+#             "Explain the financial trend clearly and include a disclaimer."
+#         )
 
-    # Structured response
+#     else:
+#         # Non-prediction intents
+#         ai_prompt = (
+#             f"User asked: '{question}'. "
+#             f"Provide explanation based strictly on this data: {values}."
+#         )
+
+#     # Call Gemini
+#     answer = call_gemini(ai_prompt)
+
+#     # Structured response
+#     return {
+#         "answer": answer,
+#         "data_used": values,
+#         "growth_rate": growth,
+#         "forecast": forecast,
+#         "disclaimer": (
+#             "This forecast is based solely on historical financial data "
+#             "and should not be considered investment advice."
+#             if forecast is not None else None
+#         )
+#     }
+
+def process_ai_question(question: str):
+
+    # 1️⃣ Enforce Nigerian-only rule
+    # is_valid = validate_nigerian_stock_question(question, db)
+
+    # if not is_valid:
+    #     return {
+    #         "answer": "This AI assistant only provides analysis for Nigerian stocks listed on the Nigerian Exchange (NGX). Please ask about a Nigerian-listed company.",
+    #         "disclaimer": None
+    #     }
+
+    # 2️⃣ Generate AI response
+    ai_text = generate_ai_response(question)
+
     return {
-        "answer": answer,
-        "data_used": values,
-        "growth_rate": growth,
-        "forecast": forecast,
-        "disclaimer": (
-            "This forecast is based solely on historical financial data "
-            "and should not be considered investment advice."
-            if forecast is not None else None
-        )
+        "answer": ai_text,
+        "disclaimer": "This response is AI-generated and does not constitute financial advice."
     }
