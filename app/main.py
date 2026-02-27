@@ -20,7 +20,7 @@ Endpoints:
 from typing import List
 import asyncio
 
-from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
@@ -34,13 +34,11 @@ import redis.asyncio as redis
 
 from app import models, schemas
 from app.config import REDIS_URL
-from app.ai.service import handle_prediction
 from app.database import SessionLocal, engine, get_db
-from app.ai.service import handle_prediction
 from app.database import SessionLocal, engine, get_db
 from app.crud import (
     create_stock_record,
-    format_income_statement,
+    # format_income_statement,
     get_bulk_comparison,
     get_fear_greed_index,
     get_market_cap_history,
@@ -58,11 +56,11 @@ from app.crud import (
     get_stocks,
     get_stocks_dashboard,
     search_stocks,
-    get_user_by_email,
-    create_user,
-    create_alert,
-    get_user_alerts,
-    log_activity,
+    # get_user_by_email,
+    # create_user,
+    # create_alert,
+    # get_user_alerts,
+    # log_activity,
     get_news_articles,
     get_latest_news
 )
