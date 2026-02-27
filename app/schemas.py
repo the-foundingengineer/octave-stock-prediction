@@ -10,7 +10,7 @@ Organized by domain:
     - Stock comparison (single & bulk)
 """
 
-from datetime import date
+from datetime import date, datetime
 from pydantic import BaseModel
 from typing import List, Optional
 
@@ -53,7 +53,8 @@ class Stock(BaseModel):
     website: Optional[str] = None
     currency: Optional[str] = None
     stock_exchange: Optional[str] = None
-    last_updated: Optional[str] = None
+    ipo_date: Optional[date] = None
+    last_updated: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -538,3 +539,66 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     disclaimer: Optional[str] = None
+# ── News ────────────────────────────────────────────────────────────────────
+
+class NewsArticleResponse(BaseModel):
+    """Single news article."""
+    id: int
+    stock_id: Optional[int] = None
+    title: str
+    description: Optional[str] = None
+    url: str
+    source: Optional[str] = None
+    image_url: Optional[str] = None
+    lang: Optional[str] = None
+    event_uri: Optional[str] = None
+    published_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+# -- Market Indicators (RSI & MACD) ------------------------------------------
+
+class RSIHistoricalPoint(BaseModel):
+    label: str
+    value: float
+    status: str
+
+class RSIHeatmapPoint(BaseModel):
+    symbol: str
+    rsi_value: float
+    daily_return: float
+    market_cap: float
+    category: str
+
+class RSIStatusDistribution(BaseModel):
+    oversold: float
+    overbought: float
+
+class RSIIndicatorResponse(BaseModel):
+    average_rsi: float
+    status_distribution: RSIStatusDistribution
+    historical_data: List[RSIHistoricalPoint]
+    heatmap_data: List[RSIHeatmapPoint]
+
+class MACDHistoricalPoint(BaseModel):
+    label: str
+    value: float
+    status: str
+
+class MACDHeatmapPoint(BaseModel):
+    symbol: str
+    macd_histogram: float
+    signal_line: float
+    market_cap: float
+    momentum_category: str
+
+class MACDMomentumDistribution(BaseModel):
+    positive: float
+    negative: float
+
+class MACDIndicatorResponse(BaseModel):
+    average_macd: float
+    momentum_distribution: MACDMomentumDistribution
+    historical_data: List[MACDHistoricalPoint]
+    heatmap_data: List[MACDHeatmapPoint]

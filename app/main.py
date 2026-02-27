@@ -18,18 +18,31 @@ Endpoints:
 """
 
 from typing import List
+import asyncio
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from app import models
 from app.ai.service import process_ai_question
+from fastapi_cache import FastAPICache
+from fastapi_cache.backends.redis import RedisBackend
+from fastapi_cache.backends.inmemory import InMemoryBackend
+from fastapi_cache.decorator import cache
+import redis.asyncio as redis
+
+from app import models, schemas
+from app.config import REDIS_URL
+from app.ai.service import handle_prediction
+from app.database import SessionLocal, engine, get_db
+from app.ai.service import handle_prediction
 from app.database import SessionLocal, engine, get_db
 from app.crud import (
     create_stock_record,
     format_income_statement,
     get_bulk_comparison,
+    get_fear_greed_index,
     get_market_cap_history,
     get_metric_comparison,
     get_popular_comparisons,
@@ -45,7 +58,15 @@ from app.crud import (
     get_stocks,
     get_stocks_dashboard,
     search_stocks,
+    get_user_by_email,
+    create_user,
+    create_alert,
+    get_user_alerts,
+    log_activity,
+    get_news_articles,
+    get_latest_news
 )
+from app.indicators import get_market_rsi, get_market_macd
 from app.schemas import (
     BulkComparisonResponse,
     DividendResponse,
@@ -67,8 +88,14 @@ from app.schemas import (
     DashboardResponse,
     ChatRequest,
     ChatResponse, 
+    NewsArticleResponse,
+    RSIIndicatorResponse,
+    MACDIndicatorResponse,
 )
 from app.services import update_stock_info
+from app.websocket_manager import manager
+from app.forecast_service import get_technical_analysis, get_analyst_consensus
+from app.tasks import start_scheduler
 
 # ── App setup ────────────────────────────────────────────────────────────────
 
@@ -87,6 +114,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+async def startup_event():
+    start_scheduler()
+    
+    # Initialize Cache
+    try:
+        r = redis.from_url(REDIS_URL, encoding="utf8", decode_responses=True)
+        # Check connection with a short timeout to prevent hanging
+        await asyncio.wait_for(r.ping(), timeout=2.0)
+        FastAPICache.init(RedisBackend(r), prefix="fastapi-cache")
+        print(f"Redis cache initialized with {REDIS_URL}")
+    except Exception as e:
+        print(f"Redis not available, falling back to InMemoryBackend: {e}")
+        FastAPICache.init(InMemoryBackend(), prefix="fastapi-cache")
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally: 
+        db.close()
+
+
 
 # ── Stock records ────────────────────────────────────────────────────────────
 
@@ -101,13 +151,14 @@ def create_record(stock: StockRecordCreate, db: Session = Depends(get_db)):
 
 
 @app.get("/stocks/dashboard", response_model=DashboardResponse)
-def read_stocks_dashboard(
+@cache(expire=300)
+async def read_stocks_dashboard(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
     """Fetch dashboard metrics and sparklines for stocks."""
-    return get_stocks_dashboard(db, page, limit)
+    return await asyncio.to_thread(get_stocks_dashboard, db, page, limit)
 
 
 @app.get("/stocks", response_model=List[Stock])
@@ -131,7 +182,8 @@ def stock_search(
 
 
 @app.get("/stocks/compare", response_model=BulkComparisonResponse)
-def bulk_compare(
+@cache(expire=300)
+async def bulk_compare(
     symbols: str = Query(..., description="Comma-separated stock symbols"),
     interval: str = Query("week", description="Kline interval: day, week, month, year"),
     limit: int = Query(52, ge=1, le=500, description="Max klines per stock"),
@@ -141,7 +193,7 @@ def bulk_compare(
     symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
     if not symbol_list:
         raise HTTPException(status_code=400, detail="No symbols provided")
-    comparisons = get_bulk_comparison(db, symbol_list, interval, limit)
+    comparisons = await asyncio.to_thread(get_bulk_comparison, db, symbol_list, interval, limit)
     return {"comparisons": comparisons}
 
 
@@ -191,9 +243,10 @@ def get_klines(
 
 
 @app.get("/stocks/{stock_id}/stats", response_model=StockStatsResponse)
-def get_stats(stock_id: int, db: Session = Depends(get_db)):
+@cache(expire=60)
+async def get_stats(stock_id: int, db: Session = Depends(get_db)):
     """Return comprehensive statistics for a stock."""
-    result = get_stock_stats(db, stock_id)
+    result = await asyncio.to_thread(get_stock_stats, db, stock_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Stock statistics not found")
     return result
@@ -206,6 +259,25 @@ def get_info(stock_id: int, db: Session = Depends(get_db)):
     if result is None:
         raise HTTPException(status_code=404, detail="Stock info not found")
     return result
+
+
+@app.get("/stocks/{stock_id}/forecast")
+def get_forecast(stock_id: int, db: Session = Depends(get_db)):
+    """Return programmatic technical analysis and analyst consensus for a stock."""
+    # Ensure stock exists
+    db_stock = get_stock(db, stock_id=stock_id)
+    if db_stock is None:
+        raise HTTPException(status_code=404, detail="Stock not found")
+        
+    technical_analysis = get_technical_analysis(db, stock_id)
+    analyst_consensus = get_analyst_consensus(db, stock_id)
+    
+    return {
+        "stock_id": stock_id,
+        "symbol": db_stock.symbol,
+        "technical_analysis": technical_analysis,
+        "analyst_forecast": analyst_consensus
+    }
 
 
 # ── Related stocks ───────────────────────────────────────────────────────────
@@ -339,3 +411,118 @@ def refresh_stock(symbol: str, token: str, db: Session = Depends(get_db)):
 @app.post("/stocks/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
     return process_ai_question(request.question)
+
+
+# ── Market Sentiment ────────────────────────────────────────────────────────
+
+
+@app.get("/market/fear-greed")
+@cache(expire=300)
+async def read_fear_greed_index(db: Session = Depends(get_db)):
+    """
+    Return the Nigerian Fear & Greed Index (0-100) and its component scores.
+    0 = Extreme Fear, 100 = Extreme Greed.
+    Components: Market Momentum, Breadth, Volume Strength, Volatility, Safe Haven Demand.
+    """
+    return await asyncio.to_thread(get_fear_greed_index, db)
+
+
+@app.get("/market/indices")
+@cache(expire=3600)
+async def read_market_indices(db: Session = Depends(get_db)):
+    """
+    Return SP10 and SP30 market indices (Top 10 and Top 30 stocks by market cap).
+    """
+    from app.crud import get_market_indices
+    return await asyncio.to_thread(get_market_indices, db)
+
+
+@app.get("/market/indicators/rsi", response_model=RSIIndicatorResponse)
+@cache(expire=3600)
+async def read_market_rsi(db: Session = Depends(get_db)):
+    """
+    Return market-wide RSI indicators and distributions.
+    Provides average RSI, overbought/oversold distribution,
+    historical RSI snapshots, and heatmap data per stock.
+    """
+    return await asyncio.to_thread(get_market_rsi, db)
+
+
+@app.get("/market/indicators/macd", response_model=MACDIndicatorResponse)
+@cache(expire=3600)
+async def read_market_macd(db: Session = Depends(get_db)):
+    """
+    Return market-wide MACD indicators and momentum distribution.
+    Provides average MACD, bullish/bearish split,
+    historical MACD snapshots, and divergence chart data per stock.
+    """
+    return await asyncio.to_thread(get_market_macd, db)
+
+
+# ── WebSockets ──────────────────────────────────────────────────────────────
+
+
+# @app.websocket("/ws/ticker")
+# async def websocket_ticker(websocket: WebSocket):
+#     """
+#     WebSocket endpoint for real-time ticker updates and AI alerts.
+#     """
+#     await manager.connect(websocket)
+#     try:
+#         while True:
+#             # Keep the connection alive and listen for any client messages (if needed)
+#             data = await websocket.receive_text()
+#             # For now, we only push from server -> client, but we can handle client messages here
+#     except WebSocketDisconnect:
+#         manager.disconnect(websocket)
+#     except Exception:
+#         manager.disconnect(websocket)
+
+
+# ── News ────────────────────────────────────────────────────────────────────
+
+
+@app.get("/stocks/{stock_id}/news", response_model=List[NewsArticleResponse])
+def read_news(stock_id: int, db: Session = Depends(get_db)):
+    """Fetch market news."""
+    return get_news_articles(db, stock_id)
+
+@app.get("/news/latest", response_model=List[NewsArticleResponse])
+@cache(expire=120)
+async def latest_news(db: Session = Depends(get_db)):
+    return await asyncio.to_thread(get_latest_news, db)
+
+
+# ── User & Alerts ────────────────────────────────────────────────────────────
+
+
+# @app.post("/users", response_model=schemas.User)
+# def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
+#     """Register a new user."""
+#     db_user = get_user_by_email(db, email=user.email)
+#     if db_user:
+#         raise HTTPException(status_code=400, detail="Email already registered")
+#     return create_user(db=db, user=user)
+
+
+# @app.post("/alerts", response_model=schemas.Alert)
+# def subscribe_alert(alert: schemas.AlertCreate, user_id: int, db: Session = Depends(get_db)):
+#     """Subscribe to news/stock alerts."""
+#     return create_alert(db=db, alert=alert, user_id=user_id)
+
+
+# @app.get("/alerts", response_model=List[schemas.Alert])
+# def read_alerts(user_id: int, db: Session = Depends(get_db)):
+#     """Fetch user's alert subscriptions."""
+#     return get_user_alerts(db, user_id=user_id)
+
+
+# ── Activity Logging ─────────────────────────────────────────────────────────
+
+
+# @app.post("/activity", response_model=schemas.UserActivity)
+# def log_user_click(activity: schemas.UserActivityCreate, user_id: int, db: Session = Depends(get_db)):
+#     """Log news article clicks for personalization."""
+#     return log_activity(db=db, activity=activity, user_id=user_id)
+
+# ── AI Chat ─────────────────────────────────────────────────────────────────

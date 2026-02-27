@@ -15,11 +15,12 @@ This is a simple boilerplate for a backend application using FastAPI and Postgre
     cp .env.example .env
     ```
 
-3.  **Run Database**:
-    Use Docker Compose to start the PostgreSQL database.
+3.  **Run Database & Cache**:
+    Use Docker Compose to start the PostgreSQL database and Redis cache.
     ```bash
     docker-compose up -d
     ```
+    *Note: If Docker is not available, the app will automatically fall back to an in-memory cache.*
 
 4.  **Run Application**:
     Start the FastAPI server.
