@@ -17,6 +17,8 @@ Endpoints:
     GET  /popular_comparisons                      – Top stocks per sector
 """
 
+from app.crud import get_top_losers
+from app.crud import get_top_gainers
 from typing import List
 import asyncio
 
@@ -523,4 +525,16 @@ async def latest_news(db: Session = Depends(get_db)):
 #     """Log news article clicks for personalization."""
 #     return log_activity(db=db, activity=activity, user_id=user_id)
 
-# ── AI Chat ─────────────────────────────────────────────────────────────────
+# ── Top Gainers and Top Losers ──────────────────────────────────────────────
+
+@app.get("/stocks/top-gainers", response_model=List[schemas.Stock])
+@cache(expire=300)
+async def read_top_gainers(timeframe: str = Query("1d", description="Timeframe for daily return"), db: Session = Depends(get_db)):
+    """Return top performing stocks by daily return."""
+    return await asyncio.to_thread(get_top_gainers, db, limit=10, timeframe=timeframe)
+
+@app.get("/stocks/top-losers", response_model=List[schemas.Stock])
+@cache(expire=300)
+async def read_top_losers(timeframe: str = Query("1d", description="Timeframe for daily return"), db: Session = Depends(get_db)):
+    """Return worst performing stocks by daily return."""
+    return await asyncio.to_thread(get_top_losers, db, limit=10, timeframe=timeframe)

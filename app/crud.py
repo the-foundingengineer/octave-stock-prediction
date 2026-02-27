@@ -1433,3 +1433,91 @@ def get_market_indices(db: Session):
         "sp10": calculate_index(sp10_ids, base_value=100.0),
         "sp30": calculate_index(sp30_ids, base_value=100.0)
     }
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Top Gainers and Top Losers
+# ════════════════════════════════════════════════════════════════════════════
+
+def _get_timeframe_delta(timeframe: str):
+    """Convert timeframe string to timedelta and label."""
+    from datetime import timedelta
+    tf = timeframe.lower()
+    if tf == "1h": return timedelta(hours=1), "1h"
+    if tf == "1d": return timedelta(days=1), "24h"
+    if tf == "1w": return timedelta(weeks=1), "7d"
+    if tf == "1m": return timedelta(days=30), "30d"
+    if tf == "1y": return timedelta(days=365), "1y"
+    # Fallback to 1d
+    return timedelta(days=1), "24h"
+
+def get_top_gainers(db: Session, limit: int = 10, timeframe: str = "1d") -> List[Stock]:
+    """Get top performing stocks by price change in a given timeframe."""
+    return _get_top_moved_stocks(db, limit, timeframe, sort_desc=True)
+
+def get_top_losers(db: Session, limit: int = 10, timeframe: str = "1d") -> List[Stock]:
+    """Get worst performing stocks by price change in a given timeframe."""
+    return _get_top_moved_stocks(db, limit, timeframe, sort_desc=False)
+
+def _get_top_moved_stocks(db: Session, limit: int, timeframe: str, sort_desc: bool) -> List[Stock]:
+    from datetime import datetime, timedelta
+    from sqlalchemy import and_, outerjoin
+    from app.models import DailyKline, Stock
+
+    # 1. Get the latest date available in the system
+    latest_date_row = db.query(DailyKline.date).order_by(desc(DailyKline.date)).first()
+    if not latest_date_row:
+        return []
+    
+    latest_date_str = latest_date_row[0]
+    latest_date = datetime.strptime(latest_date_str, "%Y-%m-%d")
+    
+    # 2. Determine start date based on timeframe
+    delta, _ = _get_timeframe_delta(timeframe)
+    start_date = latest_date - delta
+    start_date_str = start_date.strftime("%Y-%m-%d")
+
+    # 3. Subquery for latest prices
+    # We want the price at latest_date and the price at or nearest to start_date
+    latest_prices = (
+        db.query(DailyKline.stock_id, DailyKline.close.label("latest_close"))
+        .filter(DailyKline.date == latest_date_str)
+        .subquery()
+    )
+
+    # For the start price, we find the closest date <= start_date for each stock
+    # This is slightly complex in standard SQL without lateral joins, 
+    # but we can approximate by getting the max date <= start_date for each stock.
+    start_dates_subq = (
+        db.query(DailyKline.stock_id, func.max(DailyKline.date).label("max_date"))
+        .filter(DailyKline.date <= start_date_str)
+        .group_by(DailyKline.stock_id)
+        .subquery()
+    )
+
+    start_prices = (
+        db.query(DailyKline.stock_id, DailyKline.close.label("start_close"))
+        .join(start_dates_subq, and_(
+            DailyKline.stock_id == start_dates_subq.c.stock_id,
+            DailyKline.date == start_dates_subq.c.max_date
+        ))
+        .subquery()
+    )
+
+    # 4. Join everything and calculate change
+    query = (
+        db.query(Stock)
+        .join(latest_prices, Stock.id == latest_prices.c.stock_id)
+        .join(start_prices, Stock.id == start_prices.c.stock_id)
+        .filter(start_prices.c.start_close > 0)
+    )
+
+    # Sort by pct change: ((latest - start) / start) * 100
+    pct_change = ((latest_prices.c.latest_close - start_prices.c.start_close) / start_prices.c.start_close) * 100
+    
+    if sort_desc:
+        query = query.order_by(desc(pct_change))
+    else:
+        query = query.order_by(pct_change)
+
+    return query.limit(limit).all()
