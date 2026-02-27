@@ -1,5 +1,5 @@
 from enum import Enum
-import re
+# import re
 # from .classifier import In
 
 class IntentType(str, Enum):

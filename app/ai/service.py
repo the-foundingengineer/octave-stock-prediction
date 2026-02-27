@@ -63,13 +63,13 @@
 
 # app/ai/service.py
 
-from requests import Session
+# from requests import Session
 
-from app.ai.classifier import classify_intent, IntentType
-from app.ai.metric_mapper import extract_metric
-from app.ai.year_resolver import resolve_years
-from app.ai.data_service import get_available_years, get_metric_values, validate_nigerian_stock_question
-from app.ai.calculator import calculate_growth, forecast_next
+# from app.ai.classifier import classify_intent, IntentType
+# from app.ai.metric_mapper import extract_metric
+# from app.ai.year_resolver import resolve_years
+# from app.ai.data_service import get_available_years, get_metric_values, validate_nigerian_stock_question
+# from app.ai.calculator import calculate_growth, forecast_next
 from app.ai.gemini_service import generate_ai_response
 
 

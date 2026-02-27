@@ -1,5 +1,5 @@
 
-from typing import List
+# from typing import List
 
 
 def calculate_growth(previous: float, current: float) -> float:
