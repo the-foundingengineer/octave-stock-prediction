@@ -15,6 +15,13 @@ from pydantic import BaseModel
 from typing import List, Optional
 
 
+class SuggestedTopic(BaseModel):
+    id: str
+    text: str
+    icon: Optional[str] = None
+    type: Optional[str] = None  # "trend", "question", or "alert"
+
+
 # ── Stock Basics ─────────────────────────────────────────────────────────────
 
 
@@ -457,6 +464,8 @@ class DashboardStockItem(BaseModel):
     change_1h: Optional[float] = None
     change_24h: Optional[float] = None
     change_7d: Optional[float] = None
+    high_24h: Optional[float] = None
+    low_24h: Optional[float] = None
     market_cap: Optional[float] = None
     volume_24h: Optional[float] = None
     sparkline_7d: List[SparklinePoint]
@@ -592,6 +601,7 @@ class MACDHeatmapPoint(BaseModel):
     signal_line: float
     market_cap: float
     momentum_category: str
+    category: str  # Heatmap grouping (Sector)
 
 class MACDMomentumDistribution(BaseModel):
     positive: float
@@ -602,3 +612,146 @@ class MACDIndicatorResponse(BaseModel):
     momentum_distribution: MACDMomentumDistribution
     historical_data: List[MACDHistoricalPoint]
     heatmap_data: List[MACDHeatmapPoint]
+
+
+# ── Equities Screener Views ──────────────────────────────────────────────────
+
+
+class EquitiesOverviewItem(BaseModel):
+    id: int
+    symbol: str
+    name: Optional[str] = None
+    last_price: Optional[float] = None
+    high_price: Optional[float] = None
+    low_price: Optional[float] = None
+    change: Optional[float] = None
+    change_percent: Optional[float] = None
+    volume: Optional[int] = None
+
+
+class EquitiesTechnicalItem(BaseModel):
+    id: int
+    symbol: str
+    name: Optional[str] = None
+    technical_summary: str  # Strong Buy, Buy, Neutral, Sell, Strong Sell
+    rsi: Optional[float] = None
+    macd: Optional[float] = None
+    sma_20: Optional[float] = None
+    sma_50: Optional[float] = None
+    sma_200: Optional[float] = None
+
+
+class EquitiesPerformanceItem(BaseModel):
+    id: int
+    symbol: str
+    name: Optional[str] = None
+    daily_return: Optional[float] = None
+    weekly_return: Optional[float] = None
+    monthly_return: Optional[float] = None
+    ytd_return: Optional[float] = None
+    yearly_return: Optional[float] = None
+    three_year_return: Optional[float] = None
+
+
+class EquitiesFundamentalItem(BaseModel):
+    id: int
+    symbol: str
+    name: Optional[str] = None
+    market_cap: Optional[float] = None
+    revenue: Optional[float] = None
+    pe_ratio: Optional[float] = None
+    beta: Optional[float] = None
+    eps: Optional[float] = None
+    dividend_yield: Optional[float] = None
+
+
+class EquitiesResponse(BaseModel):
+    items: List[dict]  # Can hold any of the item types above
+    total: int
+    page: int
+    limit: int
+
+
+# ── Detailed Stock Analysis ──────────────────────────────────────────────────
+
+
+class ValuationDetail(BaseModel):
+    fair_value: Optional[float] = None
+    valuation_status: str  # Undervalued, Fair Value, Overvalued
+    upside_potential: Optional[float] = None  # Percentage
+
+
+class HealthDetail(BaseModel):
+    score: int  # 1-5
+    status: str  # Excellent, Good, Fair, Poor, Risky
+    solvency_score: Optional[float] = None
+    profitability_score: Optional[float] = None
+    liquidity_score: Optional[float] = None
+
+
+class TechnicalIndicatorSignal(BaseModel):
+    name: str
+    value: Optional[float] = None
+    signal: str  # Buy, Sell, Neutral
+
+
+class MovingAverageSignal(BaseModel):
+    period: int
+    value: Optional[float] = None
+    signal: str  # Buy, Sell
+
+
+class TimeframeTechnicalAnalysis(BaseModel):
+    timeframe: str  # 1H, 5H, 1D, 1W
+    summary: str  # Strong Buy, etc.
+    indicators: List[TechnicalIndicatorSignal]
+    moving_averages: List[MovingAverageSignal]
+
+
+class PeerComparisonItem(BaseModel):
+    id: int
+    symbol: str
+    name: Optional[str] = None
+    price: Optional[float] = None
+    market_cap: Optional[float] = None
+    pe_ratio: Optional[float] = None
+
+
+class StockDetailedResponse(BaseModel):
+    stock_id: int
+    symbol: str
+    name: Optional[str] = None
+    sector: Optional[str] = None
+    industry: Optional[str] = None
+
+    # Profile fields
+    description: Optional[str] = None
+    website: Optional[str] = None
+    headquarters: Optional[str] = None
+    employees: Optional[int] = None
+    founded: Optional[str] = None
+    exchange: Optional[str] = None
+    currency: Optional[str] = None
+    executives: List[StockExecutiveResponse] = []
+
+    # Quote
+    price: Optional[float] = None
+    change: Optional[float] = None
+    change_percent: Optional[float] = None
+    last_updated: Optional[str] = None
+    
+    # New analysis layers
+    valuation: ValuationDetail
+    health: HealthDetail
+    technical_analysis: List[TimeframeTechnicalAnalysis]
+    
+    # Additional components
+    latest_dividends: List[DividendResponse] = []
+    peers: List[PeerComparisonItem] = []
+    news: List[NewsArticleResponse] = []
+
+    # Stats
+    stats: Optional[StockComparisonItem] = None
+
+    class Config:
+        from_attributes = True

@@ -14,10 +14,12 @@ Public functions (used by route handlers in main.py):
     - search_stocks                    : Search by symbol or name
     - get_bulk_comparison              : Klines + stats for multiple symbols
     - get_market_cap_history           : Historical market cap
+    - get_market_suggestions           : Trending topics and AI questions
 """
 
 from datetime import datetime
 from typing import Dict, List, Optional
+import traceback
 
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
@@ -28,6 +30,10 @@ from app.models import (
     User, NewsArticle, Alert, UserActivity, MarketIndex, MacroRate,
 )
 from app import schemas, models
+
+import pandas as pd
+import ta
+import numpy as np
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -615,6 +621,7 @@ def _build_comparison_data(db: Session, stock: Stock) -> Dict:
 
     return {
         # Basic info
+        "stock_id": stock.id,
         "symbol": symbol,
         "name": stock.name,
         "sector": stock.sector,
@@ -778,7 +785,8 @@ def get_bulk_comparison(
             continue
 
         kline_data = get_stock_kline(db, stock.id, interval, kline_limit)
-        stats_data = get_stock_stats(db, stock.id)
+        # Comprehensive stats / comparison info (80+ fields)
+        stats_data = get_stock_comparison_details(db, stock.id)
 
         results.append({
             "stock_id": stock.id,
@@ -981,6 +989,8 @@ def get_stocks_dashboard(db: Session, page: int = 1, limit: int = 20) -> Dict:
             "change_1h": None,  # No intraday data available
             "change_24h": change_24h,
             "change_7d": change_7d,
+            "high_24h": float(latest.high) if latest.high else None,
+            "low_24h": float(latest.low) if latest.low else None,
             "market_cap": float(ratio.market_cap) if ratio and ratio.market_cap else None,
             "volume_24h": float(latest.volume) if latest.volume else None,
             "sparkline_7d": sparkline_data,
@@ -992,6 +1002,222 @@ def get_stocks_dashboard(db: Session, page: int = 1, limit: int = 20) -> Dict:
         "page": page,
         "limit": limit
     }
+
+
+def get_equities_screener(
+    db: Session,
+    view: str = "overview",
+    sector: Optional[str] = None,
+    sort_by: Optional[str] = None,
+    order: str = "desc",
+    page: int = 1,
+    limit: int = 50
+) -> Dict:
+    """
+    Unified equities screener for Overview, Technical, Performance, and Fundamental views.
+    """
+    offset = (page - 1) * limit
+    query = db.query(Stock)
+
+    if sector:
+        query = query.filter(Stock.sector == sector)
+
+    total = query.count()
+    stocks = query.offset(offset).limit(limit).all()
+
+    items = []
+    for s in stocks:
+        # Latest data points
+        klines = _get_latest_klines(db, s.id, limit=30)
+        latest = klines[0] if klines else None
+        prev = klines[1] if len(klines) > 1 else None
+        avg_ratio = _get_latest_ratio(db, s.id)
+        latest_income = db.query(IncomeStatement).filter(IncomeStatement.stock_id == s.id).order_by(desc(IncomeStatement.period_ending)).first()
+
+        item = {"id": s.id, "symbol": s.symbol.upper(), "name": s.name}
+
+        change = float(latest.close - prev.close) if latest and prev and latest.close and prev.close else 0.0
+        change_pct = (change / float(prev.close)) * 100 if prev and prev.close else 0.0
+
+        if view == "overview":
+            item.update({
+                "price": float(latest.close) if latest and latest.close else None,
+                "high_24h": float(latest.high) if latest and latest.high else None,
+                "low_24h": float(latest.low) if latest and latest.low else None,
+                "change_abs": change,
+                "change_24h": change_pct,
+                "volume_24h": latest.volume if latest else None
+            })
+
+        elif view == "technical":
+            if klines:
+                import pandas as pd
+                df = pd.DataFrame([{"close": k.close, "high": k.high, "low": k.low, "volume": k.volume} for k in reversed(klines)])
+                tech = _calculate_technical_indicators(df)
+                summary = tech.get("summary", "Neutral")
+                item.update({
+                    "technical_hourly": summary,  # Simple proxy for now
+                    "technical_daily": summary,
+                    "technical_weekly": summary,
+                    "technical_monthly": summary
+                })
+            else:
+                item.update({
+                    "technical_hourly": "Neutral",
+                    "technical_daily": "Neutral",
+                    "technical_weekly": "Neutral",
+                    "technical_monthly": "Neutral"
+                })
+
+        elif view == "performance":
+            item.update({
+                "daily_return": change_pct,
+                "weekly_return": ((float(latest.close) - float(klines[4].close)) / float(klines[4].close) * 100) if latest and len(klines) > 4 and klines[4].close else 0.0,
+                "monthly_return": ((float(latest.close) - float(klines[-1].close)) / float(klines[-1].close) * 100) if latest and len(klines) > 20 and klines[-1].close else 0.0,
+                "ytd_return": 0.0,
+                "yearly_return": 0.0,
+                "three_year_return": 0.0
+            })
+
+        elif view == "fundamental":
+            item.update({
+                "avg_volume_3m": latest.volume if latest else 0,
+                "market_cap": float(avg_ratio.market_cap) if avg_ratio and avg_ratio.market_cap else 0,
+                "revenue": float(latest_income.revenue) if latest_income and latest_income.revenue else 0,
+                "pe_ratio": float(avg_ratio.pe_ratio) if avg_ratio and avg_ratio.pe_ratio else 0,
+                "beta": float(avg_ratio.beta) if avg_ratio and avg_ratio.beta else 0,
+                "yield": float(avg_ratio.dividend_yield) if avg_ratio and avg_ratio.dividend_yield else 0,
+            })
+
+        elif view == "charts":
+            item.update({
+                "price": float(latest.close) if latest and latest.close else 0.0,
+                "change_24h": change_pct,
+                "sparkline_7d": [float(k.close) for k in reversed(klines)] if klines else []
+            })
+
+        items.append(item)
+
+    if sort_by and items and sort_by in items[0]:
+        items.sort(key=lambda x: (x.get(sort_by) is None, x.get(sort_by)), reverse=(order == "desc"))
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "limit": limit
+    }
+
+
+def get_stock_detailed_analysis(db: Session, stock_id: int) -> Optional[Dict]:
+    """
+    Comprehensive stock analysis including valuation, health, and multi-timeframe technicals.
+    """
+    stock = _resolve_stock(db, stock_id)
+    if not stock:
+        return None
+
+    klines_daily = _get_latest_klines(db, stock_id, limit=250)
+    import pandas as pd
+    df_daily = pd.DataFrame([{"close": k.close, "high": k.high, "low": k.low, "volume": k.volume} for k in reversed(klines_daily)])
+    
+    valuation = _calculate_fair_value(db, stock)
+    health = _calculate_health_score(db, stock)
+    tech_daily = _calculate_technical_indicators(df_daily)
+    
+    peers = db.query(Stock).filter(Stock.sector == stock.sector, Stock.id != stock_id).limit(5).all()
+    peer_list = []
+    for p in peers:
+        p_ratio = _get_latest_ratio(db, p.id)
+        peer_list.append({
+            "id": p.id,
+            "symbol": p.symbol.upper(),
+            "name": p.name,
+            "price": float(p_ratio.last_close_price) if p_ratio and p_ratio.last_close_price else None,
+            "market_cap": float(p_ratio.market_cap) if p_ratio and p_ratio.market_cap else None,
+            "pe_ratio": float(p_ratio.pe_ratio) if p_ratio and p_ratio.pe_ratio else None,
+        })
+
+    news = get_news_articles(db, stock_id, limit=10)
+    dividends_objs = db.query(Dividend).filter(Dividend.stock_id == stock_id).order_by(desc(Dividend.ex_dividend_date)).limit(10).all()
+    
+    # Serialize dividends
+    dividends = []
+    for d in dividends_objs:
+        dividends.append({
+            "id": d.id,
+            "stock_id": d.stock_id,
+            "ex_dividend_date": d.ex_dividend_date,
+            "record_date": d.record_date,
+            "pay_date": d.pay_date,
+            "amount": _safe_float(d.amount),
+            "currency": d.currency,
+            "frequency": d.frequency
+        })
+
+    # Comprehensive stats / comparison info (80+ fields)
+    stats = get_stock_comparison_details(db, stock_id)
+    
+    # 1D Change
+    klines_2 = _get_latest_klines(db, stock_id, limit=2)
+    latest = klines_2[0] if klines_2 else None
+    prev = klines_2[1] if len(klines_2) > 1 else None
+    
+    change = 0.0
+    change_percent = 0.0
+    if latest and prev and prev.close:
+        change = float(latest.close - prev.close)
+        change_percent = float((latest.close - prev.close) / prev.close * 100)
+
+    result = {
+        "stock_id": stock.id,
+        "symbol": stock.symbol.upper(),
+        "name": stock.name,
+        "sector": stock.sector,
+        "industry": stock.industry,
+        
+        # Profile fields
+        "description": stock.description,
+        "website": stock.website,
+        "headquarters": stock.headquarters,
+        "employees": stock.employees,
+        "founded": stock.founded,
+        "exchange": stock.stock_exchange,
+        "currency": stock.currency,
+        "executives": [
+            {
+                "id": e.id,
+                "name": e.name,
+                "title": e.title,
+                "age": e.age,
+                "since": e.since
+            } for e in stock.executives
+        ],
+
+        # Quote
+        "price": float(latest.close) if latest and latest.close else None,
+        "change": change,
+        "change_percent": change_percent,
+        "last_updated": latest.date if latest else None,
+
+        "valuation": valuation,
+        "health": health,
+        "technical_analysis": [
+            {
+                "timeframe": "1D",
+                "summary": tech_daily.get("summary", "Neutral"),
+                "indicators": tech_daily.get("indicators", []),
+                "moving_averages": tech_daily.get("moving_averages", [])
+            }
+        ],
+        "latest_dividends": dividends,
+        "peers": peer_list,
+        "news": news,
+        "stats": stats
+    }
+    return result
+
+
 
 
 # ── Fear & Greed Index ──────────────────────────────────────────────────────
@@ -1521,3 +1747,341 @@ def _get_top_moved_stocks(db: Session, limit: int, timeframe: str, sort_desc: bo
         query = query.order_by(pct_change)
 
     return query.limit(limit).all()
+
+
+def _build_dashboard_item(db: Session, stock: Stock) -> Dict:
+    """
+    Build a dashboard-style item for a single stock:
+    price, change_24h, change_7d, market_cap, volume_24h, sparkline_7d.
+    """
+    # Latest 8 klines (today + last 7 days for sparkline and change calc)
+    klines = (
+        db.query(DailyKline)
+        .filter(DailyKline.stock_id == stock.id)
+        .order_by(desc(DailyKline.date))
+        .limit(8)
+        .all()
+    )
+
+    if not klines:
+        return {
+            "id": stock.id,
+            "symbol": stock.symbol.upper(),
+            "name": stock.name,
+            "price": None,
+            "change_1h": None,
+            "change_24h": None,
+            "change_7d": None,
+            "market_cap": None,
+            "volume_24h": None,
+            "sparkline_7d": [],
+        }
+
+    latest = klines[0]
+    prev_24h = klines[1] if len(klines) > 1 else None
+    prev_7d = klines[-1] if len(klines) >= 8 else None
+
+    change_24h = None
+    if latest.close and prev_24h and prev_24h.close:
+        change_24h = ((latest.close - prev_24h.close) / prev_24h.close) * 100
+
+    change_7d = None
+    if latest.close and prev_7d and prev_7d.close:
+        change_7d = ((latest.close - prev_7d.close) / prev_7d.close) * 100
+
+    ratio = (
+        db.query(StockRatio)
+        .filter(StockRatio.stock_id == stock.id)
+        .order_by(desc(StockRatio.period_ending))
+        .first()
+    )
+
+    sparkline_data = [
+        {"date": str(k.date), "value": float(k.close) if k.close else None}
+        for k in reversed(klines[:7])
+    ]
+
+    return {
+        "id": stock.id,
+        "symbol": stock.symbol.upper(),
+        "name": stock.name,
+        "price": float(latest.close) if latest.close else None,
+        "change_1h": None,
+        "change_24h": change_24h,
+        "change_7d": change_7d,
+        "market_cap": float(ratio.market_cap) if ratio and ratio.market_cap else None,
+        "volume_24h": float(latest.volume) if latest.volume else None,
+        "sparkline_7d": sparkline_data,
+    }
+
+
+def _compute_timeframe_change_pct(db: Session, stock_id: int, timeframe: str) -> Optional[float]:
+    """
+    Compute percent change over the requested timeframe for a single stock.
+    """
+    from datetime import datetime
+    from app.models import DailyKline
+    latest_row = (
+        db.query(DailyKline.date, DailyKline.close)
+        .filter(DailyKline.stock_id == stock_id)
+        .order_by(desc(DailyKline.date))
+        .first()
+    )
+    if not latest_row or not latest_row.close:
+        return None
+    latest_date_str, latest_close = latest_row
+    delta, _ = _get_timeframe_delta(timeframe)
+    latest_date = datetime.strptime(latest_date_str, "%Y-%m-%d")
+    start_date_str = (latest_date - delta).strftime("%Y-%m-%d")
+    start_date_row = (
+        db.query(func.max(DailyKline.date))
+        .filter(DailyKline.stock_id == stock_id, DailyKline.date <= start_date_str)
+        .first()
+    )
+    if not start_date_row or not start_date_row[0]:
+        return None
+    start_row = (
+        db.query(DailyKline.close)
+        .filter(DailyKline.stock_id == stock_id, DailyKline.date == start_date_row[0])
+        .first()
+    )
+    if not start_row or not start_row[0]:
+        return None
+    start_close = start_row[0]
+    if not start_close or start_close == 0:
+        return None
+    return ((latest_close - start_close) / start_close) * 100.0
+
+
+def get_top_gainers_dashboard(db: Session, limit: int = 10, timeframe: str = "1d") -> List[Dict]:
+    """
+    Top gainers formatted like dashboard items.
+    Stocks are selected by timeframe-based move, then enriched with dashboard fields.
+    """
+    stocks = _get_top_moved_stocks(db, limit, timeframe, sort_desc=True)
+    items: List[Dict] = []
+    for s in stocks:
+        it = _build_dashboard_item(db, s)
+        if timeframe != "1d":
+            pct = _compute_timeframe_change_pct(db, s.id, timeframe)
+            if pct is not None:
+                it["change_24h"] = pct
+                if timeframe == "1w":
+                    it["change_7d"] = pct
+        items.append(it)
+    return items
+
+
+def get_top_losers_dashboard(db: Session, limit: int = 10, timeframe: str = "1d") -> List[Dict]:
+    """
+    Top losers formatted like dashboard items.
+    Stocks are selected by timeframe-based move, then enriched with dashboard fields.
+    """
+    stocks = _get_top_moved_stocks(db, limit, timeframe, sort_desc=False)
+    items: List[Dict] = []
+    for s in stocks:
+        it = _build_dashboard_item(db, s)
+        if timeframe != "1d":
+            pct = _compute_timeframe_change_pct(db, s.id, timeframe)
+            if pct is not None:
+                it["change_24h"] = pct
+                if timeframe == "1w":
+                    it["change_7d"] = pct
+        items.append(it)
+    return items
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Technical Analysis & Scoring Helpers
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def _calculate_technical_indicators(df: pd.DataFrame) -> Dict:
+    """
+    Calculate all Investing.com style indicators for the latest candle in the DataFrame.
+    Expects df with columns: [open, high, low, close, volume]
+    """
+    if df.empty or len(df) < 30:
+        return {}
+
+    close = df['close']
+    ma_periods = [5, 10, 20, 50, 100, 200]
+    mas = {}
+    for p in ma_periods:
+        if len(df) >= p:
+            sma = ta.trend.sma_indicator(close, window=p).iloc[-1]
+            ema = ta.trend.ema_indicator(close, window=p).iloc[-1]
+            last_price = close.iloc[-1]
+            mas[f'sma_{p}'] = {"value": sma, "signal": "Buy" if last_price > sma else "Sell"}
+            mas[f'ema_{p}'] = {"value": ema, "signal": "Buy" if last_price > ema else "Sell"}
+
+    indicators = {}
+    rsi_val = ta.momentum.rsi(close, window=14).iloc[-1]
+    rsi_signal = "Neutral"
+    if rsi_val > 70: rsi_signal = "Sell"
+    elif rsi_val < 30: rsi_signal = "Buy"
+    indicators['RSI(14)'] = {"value": rsi_val, "signal": rsi_signal}
+
+    stoch_k = ta.momentum.stoch(df['high'], df['low'], close, window=9, smooth_window=6).iloc[-1]
+    stoch_signal = "Neutral"
+    if stoch_k > 80: stoch_signal = "Sell"
+    elif stoch_k < 20: stoch_signal = "Buy"
+    indicators['STOCH(9,6)'] = {"value": stoch_k, "signal": stoch_signal}
+
+    macd_val = ta.trend.macd_diff(close).iloc[-1]
+    indicators['MACD(12,26)'] = {"value": macd_val, "signal": "Buy" if macd_val > 0 else "Sell"}
+
+    adx_val = ta.trend.adx(df['high'], df['low'], close).iloc[-1]
+    indicators['ADX(14)'] = {"value": adx_val, "signal": "Neutral"}
+
+    wr = ta.momentum.williams_r(df['high'], df['low'], close).iloc[-1]
+    wr_signal = "Neutral"
+    if wr < -80: wr_signal = "Buy"
+    elif wr > -20: wr_signal = "Sell"
+    indicators['Williams %R'] = {"value": wr, "signal": wr_signal}
+
+    cci = ta.trend.cci(df['high'], df['low'], close).iloc[-1]
+    cci_signal = "Neutral"
+    if cci > 100: cci_signal = "Sell"
+    elif cci < -100: cci_signal = "Buy"
+    indicators['CCI(14)'] = {"value": cci, "signal": cci_signal}
+
+    buy_count = 0
+    sell_count = 0
+    for m in mas.values():
+        if m['signal'] == "Buy": buy_count += 1
+        elif m['signal'] == "Sell": sell_count += 1
+    for i in indicators.values():
+        if i['signal'] == "Buy": buy_count += 1
+        elif i['signal'] == "Sell": sell_count += 1
+    
+    total = buy_count + sell_count
+    if total == 0: summary = "Neutral"
+    elif buy_count / total > 0.8: summary = "Strong Buy"
+    elif buy_count / total > 0.6: summary = "Buy"
+    elif sell_count / total > 0.8: summary = "Strong Sell"
+    elif sell_count / total > 0.6: summary = "Sell"
+    else: summary = "Neutral"
+
+    return {
+        "summary": summary,
+        "indicators": [schemas.TechnicalIndicatorSignal(name=k, value=float(v['value']), signal=v['signal']) for k, v in indicators.items()],
+        "moving_averages": [schemas.MovingAverageSignal(period=int(k.split('_')[1]), value=float(v['value']), signal=v['signal']) for k, v in mas.items() if 'sma' in k]
+    }
+
+
+def _calculate_fair_value(db: Session, stock: Stock) -> Dict:
+    """Blended valuation model: P/E Mean + DCF Lite."""
+    ratio = _get_latest_ratio(db, stock.id)
+    income = db.query(IncomeStatement).filter(IncomeStatement.stock_id == stock.id).order_by(desc(IncomeStatement.period_ending)).first()
+    
+    if not ratio or not income or not ratio.last_close_price:
+        return {"fair_value": None, "valuation_status": "Insufficient Data", "upside_potential": None}
+
+    eps = float(income.eps_basic or 0)
+    pe_valuation = eps * 10
+    
+    fcf = float(income.free_cash_flow or 0)
+    if fcf > 0:
+        r = 0.15 
+        g = 0.05 
+        dcf_valuation = (fcf * (1 + g)) / (r - g)
+        shares = float(income.shares_basic or 1)
+        dcf_ps = dcf_valuation / shares
+        fair_value = (pe_valuation + dcf_ps) / 2
+    else:
+        fair_value = pe_valuation
+
+    current_price = float(ratio.last_close_price)
+    upside = ((fair_value - current_price) / current_price) * 100 if current_price > 0 else 0.0
+    
+    status = "Fair Value"
+    if upside > 20: status = "Undervalued"
+    elif upside < -20: status = "Overvalued"
+
+    return {
+        "fair_value": fair_value,
+        "valuation_status": status,
+        "upside_potential": upside
+    }
+
+
+def _calculate_health_score(db: Session, stock: Stock) -> Dict:
+    """Score 1-5 based on Solvency, Profitability, and Liquidity."""
+    ratio = _get_latest_ratio(db, stock.id)
+    if not ratio:
+        return {"score": 0, "status": "Insufficient Data"}
+
+    s_score = 0 
+    if ratio.debt_equity and ratio.debt_equity < 1: s_score += 1
+    if ratio.interest_coverage and ratio.interest_coverage > 3: s_score += 1
+
+    p_score = 0 
+    if ratio.roe and ratio.roe > 0.15: p_score += 1
+    if ratio.roa and ratio.roa > 0.05: p_score += 1
+
+    l_score = 0 
+    if ratio.current_ratio and ratio.current_ratio > 1.5: l_score += 1
+
+    total_score = s_score + p_score + l_score
+    status_map = {0: "Risky", 1: "Poor", 2: "Fair", 3: "Good", 4: "Good", 5: "Excellent"}
+    
+    return {
+        "score": max(1, total_score),
+        "status": status_map.get(total_score, "Fair"),
+        "solvency_score": float(s_score),
+        "profitability_score": float(p_score),
+        "liquidity_score": float(l_score)
+    }
+
+
+def get_market_suggestions(db: Session) -> List[Dict]:
+    """
+    Generate trending topics and analysis questions based on current market state.
+    """
+    suggestions = []
+    
+    # 1. Top Gainer Trend
+    top_gainer = (
+        db.query(Stock)
+        .join(DailyKline)
+        .order_by(desc(DailyKline.close / DailyKline.open)) # Simplistic 1d jump
+        .first()
+    )
+    if top_gainer:
+        suggestions.append({
+            "id": f"gainer_{top_gainer.id}",
+            "text": f"Why is {top_gainer.symbol} rallying today?",
+            "type": "trend",
+            "icon": "trending_up"
+        })
+
+    # 2. Market Sentiment Focus
+    suggestions.append({
+        "id": "sentiment_analysis",
+        "text": "Analyze current NGX market sentiment",
+        "type": "question",
+        "icon": "psychology"
+    })
+
+    # 3. Dividend Alert
+    recent_div = (
+        db.query(Dividend)
+        .join(Stock)
+        .order_by(desc(Dividend.ex_dividend_date))
+        .first()
+    )
+    if recent_div:
+        suggestions.append({
+            "id": f"div_{recent_div.id}",
+            "text": f"Upcoming dividend for {recent_div.stock.symbol}",
+            "type": "alert",
+            "icon": "paid"
+        })
+
+    # Fallback to general questions if list is short
+    if len(suggestions) < 5:
+        suggestions.append({"id": "q1", "text": "Top dividend stocks for March", "type": "trend", "icon": "calendar_month"})
+        suggestions.append({"id": "q2", "text": "Which sectors are outperforming?", "type": "question", "icon": "donut_small"})
+
+    return suggestions

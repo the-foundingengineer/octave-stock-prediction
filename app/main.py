@@ -17,12 +17,11 @@ Endpoints:
     GET  /popular_comparisons                      – Top stocks per sector
 """
 
-from app.crud import get_top_losers
-from app.crud import get_top_gainers
-from typing import List
+from app.crud import get_top_losers_dashboard, get_top_gainers_dashboard
+from typing import List, Optional
 import asyncio
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
@@ -57,6 +56,8 @@ from app.crud import (
     get_stock_stats,
     get_stocks,
     get_stocks_dashboard,
+    get_equities_screener,
+    get_stock_detailed_analysis,
     search_stocks,
     # get_user_by_email,
     # create_user,
@@ -109,10 +110,28 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+def timeframe_cache_key_builder(func, namespace, request: Request, response, *args, **kwargs):
+    tf = None
+    path = func.__name__
+    if request:
+        tf = request.query_params.get("timeframe")
+        path = request.url.path
+    if tf is None:
+        tf = kwargs.get("timeframe", "1d")
+    return f"{namespace}:{path}:tf={tf}"
+
+@app.get("/")
+def root():
+    return {"status": "ok", "service": "Octave Stock API"}
+
+@app.get("/health")
+def health():
+    return {"ok": True}
 
 @app.on_event("startup")
 async def startup_event():
@@ -211,6 +230,57 @@ def compare_metrics(
 
     comparisons = get_metric_comparison(db, symbol_list, metric, limit)
     return {"metric": metric, "comparisons": comparisons}
+
+# ── Top Gainers and Top Losers ──────────────────────────────────────────────
+
+@app.get("/stocks/top-gainers", response_model=List[schemas.DashboardStockItem])
+@cache(expire=300, key_builder=timeframe_cache_key_builder, namespace="top-gainers")
+async def read_top_gainers(timeframe: str = Query("1d", description="Timeframe for daily return"), db: Session = Depends(get_db)):
+    """Return top performing stocks by daily return."""
+    return await asyncio.to_thread(get_top_gainers_dashboard, db, 10, timeframe)
+
+@app.get("/stocks/top-losers", response_model=List[schemas.DashboardStockItem])
+@cache(expire=300, key_builder=timeframe_cache_key_builder, namespace="top-losers")
+async def read_top_losers(timeframe: str = Query("1d", description="Timeframe for daily return"), db: Session = Depends(get_db)):
+    """Return worst performing stocks by daily return."""
+    return await asyncio.to_thread(get_top_losers_dashboard, db, 10, timeframe)
+
+
+
+# ── Equities (MUST be before /stocks/{stock_id}) ─────────────────────────────
+
+
+@app.get("/equities", response_model=schemas.EquitiesResponse)
+@cache(expire=300)
+async def read_equities(
+    view: str = Query("overview", description="overview, technical, performance, fundamental"),
+    sector: Optional[str] = Query(None, description="Filter stocks by sector"),
+    sort_by: Optional[str] = Query(None, description="Field to sort by"),
+    order: str = Query("desc", description="Sort order: asc, desc"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=100),
+    db: Session = Depends(get_db)
+):
+    """
+    Unified equities screener for Overview, Technical, Performance, and Fundamental views.
+    """
+    from app.crud import get_equities_screener
+    return await asyncio.to_thread(
+        get_equities_screener, db, view, sector, sort_by, order, page, limit
+    )
+
+
+@app.get("/stocks/{stock_id}/detailed")
+@cache(expire=300)
+async def read_stock_detailed_analysis(stock_id: int, db: Session = Depends(get_db)):
+    """
+    Comprehensive stock analysis including valuation, health, and technicals.
+    """
+    from app.crud import get_stock_detailed_analysis
+    result = await asyncio.to_thread(get_stock_detailed_analysis, db, stock_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Stock not found")
+    return result
 
 
 @app.get("/stocks/{stock_id}", response_model=Stock)
@@ -437,6 +507,16 @@ async def read_market_indices(db: Session = Depends(get_db)):
     return await asyncio.to_thread(get_market_indices, db)
 
 
+@app.get("/market/suggestions", response_model=List[schemas.SuggestedTopic])
+@cache(expire=600)
+async def read_market_suggestions(db: Session = Depends(get_db)):
+    """
+    Return dynamic trending topics and AI questions.
+    """
+    from app.crud import get_market_suggestions
+    return await asyncio.to_thread(get_market_suggestions, db)
+
+
 @app.get("/market/indicators/rsi", response_model=RSIIndicatorResponse)
 @cache(expire=3600)
 async def read_market_rsi(db: Session = Depends(get_db)):
@@ -524,17 +604,3 @@ async def latest_news(db: Session = Depends(get_db)):
 # def log_user_click(activity: schemas.UserActivityCreate, user_id: int, db: Session = Depends(get_db)):
 #     """Log news article clicks for personalization."""
 #     return log_activity(db=db, activity=activity, user_id=user_id)
-
-# ── Top Gainers and Top Losers ──────────────────────────────────────────────
-
-@app.get("/stocks/top-gainers", response_model=List[schemas.Stock])
-@cache(expire=300)
-async def read_top_gainers(timeframe: str = Query("1d", description="Timeframe for daily return"), db: Session = Depends(get_db)):
-    """Return top performing stocks by daily return."""
-    return await asyncio.to_thread(get_top_gainers, db, limit=10, timeframe=timeframe)
-
-@app.get("/stocks/top-losers", response_model=List[schemas.Stock])
-@cache(expire=300)
-async def read_top_losers(timeframe: str = Query("1d", description="Timeframe for daily return"), db: Session = Depends(get_db)):
-    """Return worst performing stocks by daily return."""
-    return await asyncio.to_thread(get_top_losers, db, limit=10, timeframe=timeframe)

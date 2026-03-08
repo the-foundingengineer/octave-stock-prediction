@@ -118,7 +118,7 @@ def get_market_macd(db: Session) -> Dict:
     one_year_ago = datetime.utcnow() - timedelta(days=120)
     
     klines = (
-        db.query(DailyKline.stock_id, DailyKline.date, DailyKline.close, Stock.symbol)
+        db.query(DailyKline.stock_id, DailyKline.date, DailyKline.close, Stock.symbol, Stock.sector)
         .join(Stock, DailyKline.stock_id == Stock.id)
         .filter(DailyKline.close != None)
         .filter(DailyKline.date >= one_year_ago.strftime("%Y-%m-%d"))
@@ -137,6 +137,7 @@ def get_market_macd(db: Session) -> Dict:
     df = pd.DataFrame([{
         "stock_id": k.stock_id,
         "symbol": k.symbol,
+        "sector": k.sector,
         "date": k.date,
         "close": float(k.close)
     } for k in klines])
@@ -189,7 +190,8 @@ def get_market_macd(db: Session) -> Dict:
             "macd_histogram": float(histogram),
             "signal_line": float(signal_line),
             "market_cap": mcap_dict.get(stock_id, 0),
-            "momentum_category": category
+            "momentum_category": category,
+            "category": group["sector"].iloc[-1] or "Other"
         })
         
     avg_macd = float((macd_sum / total_count) if total_count > 0 else 0)
