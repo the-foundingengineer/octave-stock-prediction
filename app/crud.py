@@ -124,7 +124,7 @@ def get_stocks(db: Session, page: int, limit: int) -> List[Stock]:
     )
 
 
-def create_stock_record(db: Session, stock: StockRecordCreate) -> DailyKline:
+def create_stock_record(db: Session, stock: schemas.StockRecordCreate) -> DailyKline:
     """Insert a new daily kline record."""
     # Resolve stock_id from symbol
     stock_row = db.query(Stock).filter(Stock.symbol.ilike(stock.symbol)).first()
