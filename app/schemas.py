@@ -755,3 +755,55 @@ class StockDetailedResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# -- User, Alerts, and Activity ----------------------------------------------
+
+class UserBase(BaseModel):
+    email: str
+    full_name: Optional[str] = None
+
+
+class UserCreate(UserBase):
+    password: str
+
+
+class User(UserBase):
+    id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AlertBase(BaseModel):
+    stock_id: Optional[int] = None
+    keyword: Optional[str] = None
+
+
+class AlertCreate(AlertBase):
+    pass
+
+
+class Alert(AlertBase):
+    id: int
+    user_id: int
+    created_at: datetime
+    last_triggered_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class UserActivityCreate(BaseModel):
+    article_id: int
+    activity_type: str
+
+
+class UserActivity(UserActivityCreate):
+    id: int
+    user_id: int
+    timestamp: datetime
+
+    class Config:
+        from_attributes = True
